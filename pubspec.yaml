@@ -1,0 +1,9 @@
+name: face_vision_service
+description: Portable face analysis service with stable face tracking IDs. Runs in an isolate, no Flutter dependency.
+version: 0.1.0
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  opencv_dart: 1.2.4

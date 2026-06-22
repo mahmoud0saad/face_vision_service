@@ -22,10 +22,19 @@ const int kAgeGenderInputSize = 227;
 const int kProcessMaxWidth = 320;
 
 /// Max faces to run age/gender on per frame.
-const int kMaxFacesToClassify = 4;
+const int kMaxFacesToClassify = 14;
 
 /// Laplacian std-dev threshold: above = eye open, below = eye closed.
-const double kEyeOpenStdDevThreshold = 14.0;
+const double kEyeOpenStdDevThreshold = 20.0;
 
 /// Min eye crop size (pixels) for reliable classification.
 const int kMinEyeCropSize = 12;
+
+/// EAR threshold: above = eye open (typical range 0.20–0.30; tune per device).
+const double kEarOpenThreshold = 0.22;
+
+/// Gaussian blur kernel size for eyelid edge detection in eye ROI.
+const int kEarBlurKernel = 3;
+
+/// Edge magnitude quantile used as minimum eyelid edge strength.
+const double kEarEdgeQuantile = 0.75;

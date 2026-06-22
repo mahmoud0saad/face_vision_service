@@ -3,7 +3,9 @@ import 'package:opencv_dart/opencv_dart.dart' as cv;
 import '../entities/detected_face.dart';
 import '../entities/model_paths.dart';
 import '../vision_constants.dart';
+import 'ear_eye_state_analyzer.dart';
 import 'eye_state_analyzer.dart';
+import 'eye_state_combiner.dart';
 
 class OpenCvVisionDatasource {
   cv.Net? _faceNet;
@@ -11,7 +13,9 @@ class OpenCvVisionDatasource {
   cv.Net? _genderNet;
   bool _loaded = false;
 
-  final EyeStateAnalyzer _eyeAnalyzer = EyeStateAnalyzer();
+  final EyeStateAnalyzer _laplacianEyeAnalyzer = EyeStateAnalyzer();
+  final EarEyeStateAnalyzer _earEyeAnalyzer = EarEyeStateAnalyzer();
+  final EyeStateCombiner _eyeCombiner = EyeStateCombiner();
 
   Future<void> loadModels(ModelPaths paths) async {
     if (_loaded) return;
@@ -61,7 +65,9 @@ class OpenCvVisionDatasource {
         final w = (box.w * invScale).round().clamp(1, frame.cols - x1);
         final h = (box.h * invScale).round().clamp(1, frame.rows - y1);
 
-        final eyes = _eyeAnalyzer.analyze(frame, x1, y1, w, h);
+        final lap = _laplacianEyeAnalyzer.analyze(frame, x1, y1, w, h);
+        final ear = _earEyeAnalyzer.analyze(frame, x1, y1, w, h);
+        final eyes = _eyeCombiner.combinePair(lap, ear);
 
         final roi = frame.region(cv.Rect(x1, y1, w, h));
         final labels = _classifyAgeGender(ageNet, genderNet, roi);

@@ -59,12 +59,20 @@ flutter pub get
 
 Pin `ref` to a tag (e.g. `v0.1.0`), a branch (e.g. `main`), or a commit SHA.
 
-### Path dependency (monorepo / local dev)
+### Path dependency (local dev)
 
 ```yaml
 dependencies:
   face_vision_service:
-    path: packages/face_vision_service
+    path: D:/StudioProjects/StudioProjects/face_vision_service
+```
+
+Or a sibling folder relative to your app:
+
+```yaml
+dependencies:
+  face_vision_service:
+    path: ../face_vision_service
 ```
 
 ### Copy into your project
@@ -115,7 +123,14 @@ Do **not** call `start()` before every image — that reloads everything.
 
 ### Model loading in Flutter
 
-Flutter assets are not files on disk. Pass a `readBytes` callback when constructing the client (see [Integration example](#integration-example-flutter-app)):
+With a **path** or **git** dependency on desktop, use the default client — models are resolved from the package folder on disk via `Isolate.resolvePackageUri`:
+
+```dart
+final client = FaceVisionServiceClient();
+await client.start();
+```
+
+For mobile release builds where package files are not directly on disk, pass a `readBytes` callback:
 
 ```dart
 final client = FaceVisionServiceClient(
@@ -127,7 +142,7 @@ final client = FaceVisionServiceClient(
 await client.start();
 ```
 
-Package assets under `lib/` are included automatically when you depend on `face_vision_service` — no extra `flutter: assets` entries in your app.
+When using `readBytes`, declare models in the package `pubspec.yaml` under `flutter: assets` so they are bundled into the app.
 
 ## Public API
 
@@ -262,7 +277,7 @@ Same person in a similar position across two `analyze` calls → same `id`. IDs 
 ### Package layout
 
 ```
-packages/face_vision_service/
+face_vision_service/
 ├── pubspec.yaml
 ├── README.md
 └── lib/
@@ -288,10 +303,10 @@ packages/face_vision_service/
 
 ## Integration example (Flutter app)
 
-The reference app [`face_vision`](../../) wraps this package:
+The reference app [`face_vision`](../face_vision-master/) wraps this package:
 
-- **Models**: [`lib/data/datasources/model_loader.dart`](../../lib/data/datasources/model_loader.dart) supplies `readBytes` via `rootBundle`; `FaceVisionServiceClient.start()` loads bundled models
-- **Adapter**: [`lib/data/repositories/face_analysis_repository_impl.dart`](../../lib/data/repositories/face_analysis_repository_impl.dart) maps service types to domain entities
+- **Client**: [`lib/main.dart`](../face_vision-master/lib/main.dart) constructs `FaceVisionServiceClient()` and wires it through the repository layer
+- **Adapter**: [`lib/data/repositories/face_analysis_repository_impl.dart`](../face_vision-master/lib/data/repositories/face_analysis_repository_impl.dart) maps service types to domain entities
 - **Live capture**: camera stays open on the UI isolate; every 2s sends `RawImage` to `analyze()` while the service isolate keeps running
 
 ```dart

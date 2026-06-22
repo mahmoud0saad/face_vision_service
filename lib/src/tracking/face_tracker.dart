@@ -5,7 +5,7 @@ import '../entities/detected_face.dart';
 /// Uses IoU (Intersection over Union) on bounding boxes for matching.
 /// Tracks are removed after [maxMissedFrames] consecutive misses.
 class FaceTracker {
-  FaceTracker({this.iouThreshold = 0.3, this.maxMissedFrames = 3});
+  FaceTracker({this.iouThreshold = 0.3, this.maxMissedFrames = 15});
 
   final double iouThreshold;
   final int maxMissedFrames;

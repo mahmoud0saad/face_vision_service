@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 
+import '../bundled_models.dart';
 import '../datasources/opencv_vision_datasource.dart';
 import '../entities/face_analysis_result.dart';
 import '../entities/model_paths.dart';
@@ -23,8 +24,12 @@ void serviceIsolateEntry(SendPort mainSendPort) {
     switch (cmd) {
       case 'init':
         try {
-          final pathsRaw = message['paths'] as Map<Object?, Object?>;
-          final paths = ModelPaths.fromMap(pathsRaw.cast<String, String>());
+          final paths = await _resolveModelPaths(message, mainSendPort);
+          mainSendPort.send({
+            'type': 'progress',
+            'stage': 'loading_dnn',
+            'progress': null,
+          });
           await vision.loadModels(paths);
           mainSendPort.send({'type': 'ready'});
         } catch (e) {
@@ -68,4 +73,37 @@ void serviceIsolateEntry(SendPort mainSendPort) {
         Isolate.exit();
     }
   });
+}
+
+Future<ModelPaths> _resolveModelPaths(
+  Map<Object?, Object?> message,
+  SendPort mainSendPort,
+) async {
+  final pathsRaw = message['paths'] as Map<Object?, Object?>?;
+  if (pathsRaw != null) {
+    return ModelPaths.fromMap(pathsRaw.cast<String, String>());
+  }
+
+  final modelBytesRaw = message['modelBytes'] as Map<Object?, Object?>?;
+  if (modelBytesRaw != null) {
+    final filesByName = modelBytesRaw.map(
+      (key, value) => MapEntry(key as String, value as Uint8List),
+    );
+    return BundledModels.writeBytesToDisk(
+      filesByName,
+      onProgress: (progress) => mainSendPort.send({
+        'type': 'progress',
+        'stage': 'copying_models',
+        'progress': progress,
+      }),
+    );
+  }
+
+  return BundledModels.loadToDisk(
+    onProgress: (progress) => mainSendPort.send({
+      'type': 'progress',
+      'stage': 'copying_models',
+      'progress': progress,
+    }),
+  );
 }

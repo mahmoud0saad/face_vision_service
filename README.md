@@ -22,7 +22,32 @@ No Flutter dependency — copy this folder into any Dart/Flutter project.
 
 ### Bundled model files
 
-Six pretrained models ship with the package under `lib/assets/models/` (~94 MB total). On first `start()`, they are copied to a temp cache directory so OpenCV can load them from disk.
+Six pretrained models ship with the package under `lib/assets/models/` (~94 MB total). On first `start()`, they are copied to a temp cache directory so OpenCV can load them from disk. Model copy and DNN loading run in the **worker isolate** when possible so the UI thread stays responsive.
+
+### Startup time and UI
+
+`start()` is intentionally slow on first launch. Expect roughly:
+
+| Phase | First launch | Later launches |
+|-------|--------------|----------------|
+| Copy ~94 MB models to cache | 5–30 s (skipped when cache exists) | Skipped |
+| Spawn worker + load 3 DNN nets | 10–60 s depending on device | Same each session |
+
+**Always show a loading screen** while `await client.start()` runs. The UI may still feel sluggish on low-RAM devices during DNN load because CPU and memory spike system-wide — this is normal.
+
+Use `onStartupProgress` to drive a progress indicator:
+
+```dart
+await client.start(
+  onStartupProgress: (stage, progress) {
+    // stage: 'spawning_isolate' | 'copying_models' | 'loading_dnn'
+    // progress: 0.0–1.0 during copying_models, null otherwise
+    print('$stage ${progress ?? ''}');
+  },
+);
+```
+
+Call `start()` once at app launch (not before every frame). Subsequent `analyze()` calls are fast.
 
 | File | Role |
 |------|------|
@@ -33,7 +58,7 @@ Six pretrained models ship with the package under `lib/assets/models/` (~94 MB t
 | `gender_net.caffemodel` | Gender network |
 | `gender_deploy.prototxt` | Gender deploy |
 
-Override with custom files via `start(ModelPaths(...))` if needed.
+Override with custom files via `start(paths: ModelPaths(...))` if needed.
 
 ## Installation
 
@@ -153,7 +178,7 @@ Export entry: `package:face_vision_service/face_vision_service.dart`
 | Method / property | Description |
 |-------------------|-------------|
 | `bool isRunning` | `true` after `start`, until `dispose` |
-| `Future<void> start([ModelPaths? paths])` | Spawn worker isolate and load DNNs (bundled models when `paths` is omitted) |
+| `Future<void> start({ModelPaths? paths, StartupProgressCallback? onStartupProgress})` | Spawn worker isolate and load DNNs (bundled models when `paths` is omitted) |
 | `Future<FaceAnalysisResult> analyze(RawImage image)` | Detect + classify one BGR frame |
 | `Future<void> resetTracker()` | Clear face ID tracks (session reset) |
 | `Future<void> dispose()` | Send shutdown, kill isolate |
@@ -184,7 +209,7 @@ Export entry: `package:face_vision_service/face_vision_service.dart`
 
 ### `ModelPaths` and `BundledModels`
 
-`ModelPaths` holds paths to the six model files on disk (used internally and for `start(customPaths)`). `BundledModels.loadToDisk()` copies package assets to a cache directory and returns `ModelPaths`.
+`ModelPaths` holds paths to the six model files on disk (used internally and for `start(paths: customPaths)`). `BundledModels.loadToDisk()` copies package assets to a cache directory and returns `ModelPaths`.
 
 ### `FaceTracker` (exported, optional)
 
@@ -224,7 +249,10 @@ Messages are `Map` with `cmd` (main → worker) or `type` (worker → main).
 
 | Direction | Command / type | Payload | Meaning |
 |-----------|----------------|---------|---------|
-| → worker | `init` | `paths` | Load face/age/gender models |
+| → worker | `init` | `paths` (optional) | Load models from disk paths |
+| → worker | `init` | `modelBytes` (optional) | Write bundled bytes to cache, then load |
+| → worker | `init` | — | Copy bundled models from package URI in worker, then load |
+| ← main | `progress` | `stage`, `progress` | Startup progress (`copying_models`, `loading_dnn`) |
 | ← main | `ready` | — | Models loaded |
 | → worker | `analyze` | `bgrBytes`, `width`, `height` | Run pipeline on one frame |
 | ← main | `result` | `data` (FaceAnalysisResult map) | Success |

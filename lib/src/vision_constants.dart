@@ -24,6 +24,9 @@ const int kProcessMaxWidth = 320;
 /// Max faces to run age/gender on per frame.
 const int kMaxFacesToClassify = 14;
 
+/// Outward padding applied to each side of the raw SSD face box (fraction of box size).
+const double kFaceBoxPadFraction = 0.05;
+
 /// Laplacian std-dev threshold: above = eye open, below = eye closed.
 const double kEyeOpenStdDevThreshold = 20.0;
 

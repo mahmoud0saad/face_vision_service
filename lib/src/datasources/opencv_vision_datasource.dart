@@ -6,6 +6,7 @@ import '../vision_constants.dart';
 import 'ear_eye_state_analyzer.dart';
 import 'eye_state_analyzer.dart';
 import 'eye_state_combiner.dart';
+import 'face_box_geometry.dart';
 
 class OpenCvVisionDatasource {
   cv.Net? _faceNet;
@@ -74,13 +75,23 @@ class OpenCvVisionDatasource {
         roi.dispose();
         classified++;
 
+        final (ex, ey, ew, eh) = expandFaceBox(
+          x1,
+          y1,
+          w,
+          h,
+          frame.cols,
+          frame.rows,
+          padFraction: kFaceBoxPadFraction,
+        );
+
         faces.add(
           DetectedFace(
             id: 0, // placeholder, tracker assigns real ID
-            x: x1,
-            y: y1,
-            width: w,
-            height: h,
+            x: ex,
+            y: ey,
+            width: ew,
+            height: eh,
             genderLabel: labels.$1,
             ageLabel: labels.$2,
             detectionScore: box.score,

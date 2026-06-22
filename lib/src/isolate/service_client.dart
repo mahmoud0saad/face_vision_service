@@ -33,17 +33,22 @@ class FaceVisionServiceClient {
   Completer<FaceAnalysisResult>? _analyzeCompleter;
   Completer<void>? _resetCompleter;
   Completer<void>? _stopCompleter;
+  StartupProgressCallback? _startupProgressCallback;
 
   bool get isRunning => _isolate != null;
 
   /// Spawns the isolate and loads models. Must be called before [analyze].
   ///
   /// When [paths] is omitted, loads bundled models from the package.
-  Future<void> start([ModelPaths? paths]) async {
+  /// Pass [onStartupProgress] to update a loading UI during the slow startup.
+  Future<void> start({
+    ModelPaths? paths,
+    StartupProgressCallback? onStartupProgress,
+  }) async {
     if (_isolate != null) return;
 
-    final resolved = paths ??
-        await BundledModels.loadToDisk(readBytes: _readBytes);
+    _startupProgressCallback = onStartupProgress;
+    onStartupProgress?.call('spawning_isolate', null);
 
     _initCompleter = Completer<void>();
     _mainReceivePort = ReceivePort();
@@ -62,15 +67,31 @@ class FaceVisionServiceClient {
           throw TimeoutException('Vision service isolate init timed out'),
     );
 
-    // Now send init command
+    // Send init command (model prep runs in the worker when possible)
     _initCompleter = Completer<void>();
-    _workerSendPort!.send({'cmd': 'init', 'paths': resolved.toMap()});
+
+    if (paths != null) {
+      onStartupProgress?.call('loading_dnn', null);
+      _workerSendPort!.send({'cmd': 'init', 'paths': paths.toMap()});
+    } else if (_readBytes != null) {
+      onStartupProgress?.call('copying_models', 0);
+      final modelBytes = await BundledModels.readAllToMemory(
+        readBytes: _readBytes,
+        onProgress: (progress) =>
+            onStartupProgress?.call('copying_models', progress),
+      );
+      _workerSendPort!.send({'cmd': 'init', 'modelBytes': modelBytes});
+    } else {
+      _workerSendPort!.send({'cmd': 'init'});
+    }
 
     await _initCompleter!.future.timeout(
       const Duration(seconds: 120),
       onTimeout: () =>
           throw TimeoutException('Vision service model load timed out'),
     );
+
+    _startupProgressCallback = null;
   }
 
   /// Analyze a single image. Returns the result with tracked face IDs.
@@ -125,6 +146,14 @@ class FaceVisionServiceClient {
         if (_initCompleter != null && !_initCompleter!.isCompleted) {
           _initCompleter!.complete();
         }
+      case 'progress':
+        final stage = message['stage'] as String?;
+        if (stage != null) {
+          _startupProgressCallback?.call(
+            stage,
+            (message['progress'] as num?)?.toDouble(),
+          );
+        }
       case 'result':
         final data = message['data'] as Map<Object?, Object?>?;
         if (data != null && _analyzeCompleter != null) {
@@ -154,5 +183,6 @@ class FaceVisionServiceClient {
     _isolate?.kill(priority: Isolate.immediate);
     _isolate = null;
     _workerSendPort = null;
+    _startupProgressCallback = null;
   }
 }

@@ -15,7 +15,7 @@ void serviceIsolateEntry(SendPort mainSendPort) {
   mainSendPort.send(workerPort.sendPort);
 
   final vision = OpenCvVisionDatasource();
-  final tracker = FaceTracker();
+  final tracker = FaceTracker(maxMissedFrames: 500);
 
   workerPort.listen((Object? message) async {
     if (message is! Map<Object?, Object?>) return;
@@ -35,37 +35,45 @@ void serviceIsolateEntry(SendPort mainSendPort) {
         } catch (e) {
           mainSendPort.send({'type': 'error', 'message': e.toString()});
         }
+        break;
 
       case 'analyze':
         try {
           final bytes = message['bgrBytes'] as Uint8List;
           final width = message['width'] as int;
           final height = message['height'] as int;
+          final includePreviewJpeg =
+              message['includePreviewJpeg'] as bool? ?? true;
 
           final mat = cv.Mat.fromList(height, width, cv.MatType.CV_8UC3, bytes);
           final rawFaces = vision.detectAndClassify(mat);
           final trackedFaces = tracker.assign(rawFaces);
 
-          // Encode a JPEG preview
-          final params = cv.VecI32.fromList([cv.IMWRITE_JPEG_QUALITY, 80]);
-          final (success, jpeg) = cv.imencode('.jpg', mat, params: params);
+          Uint8List? previewJpeg;
+          if (includePreviewJpeg) {
+            final params = cv.VecI32.fromList([cv.IMWRITE_JPEG_QUALITY, 80]);
+            final (success, jpeg) = cv.imencode('.jpg', mat, params: params);
+            previewJpeg = success ? Uint8List.fromList(jpeg) : null;
+          }
           mat.dispose();
 
           final result = FaceAnalysisResult(
             width: width,
             height: height,
             faces: trackedFaces,
-            previewJpeg: success ? Uint8List.fromList(jpeg) : null,
+            previewJpeg: previewJpeg,
           );
 
           mainSendPort.send({'type': 'result', 'data': result.toMap()});
         } catch (e) {
           mainSendPort.send({'type': 'error', 'message': e.toString()});
         }
+        break;
 
       case 'resetTracker':
         tracker.reset();
         mainSendPort.send({'type': 'ok'});
+        break;
 
       case 'shutdown':
         mainSendPort.send({'type': 'stopped'});

@@ -1,14 +1,21 @@
 import '../entities/detected_face.dart';
+import '../vision_constants.dart';
 
 /// Assigns stable IDs to detected faces across multiple analyze calls.
 ///
 /// Uses IoU (Intersection over Union) on bounding boxes for matching.
 /// Tracks are removed after [maxMissedFrames] consecutive misses.
+/// Gender and age labels lock after [labelConfirmFrames] consecutive agrees.
 class FaceTracker {
-  FaceTracker({this.iouThreshold = 0.3, this.maxMissedFrames = 15});
+  FaceTracker({
+    this.iouThreshold = 0.3,
+    this.maxMissedFrames = 15,
+    this.labelConfirmFrames = kLabelConfirmFrames,
+  });
 
   final double iouThreshold;
   final int maxMissedFrames;
+  final int labelConfirmFrames;
 
   int _nextId = 1;
   final List<_Track> _tracks = [];
@@ -48,15 +55,18 @@ class FaceTracker {
       final track = _tracks[pair.trackIdx];
       track.missed = 0;
       track.face = rawFaces[pair.faceIdx];
-      result[pair.faceIdx] = _withId(rawFaces[pair.faceIdx], track.id);
+      track.updateLabels(rawFaces[pair.faceIdx], labelConfirmFrames);
+      result[pair.faceIdx] = track.toDetectedFace();
     }
 
     // Unmatched faces get new IDs
     for (var fi = 0; fi < rawFaces.length; fi++) {
       if (matched[fi]) continue;
       final id = _nextId++;
-      _tracks.add(_Track(id: id, face: rawFaces[fi]));
-      result[fi] = _withId(rawFaces[fi], id);
+      final track = _Track(id: id, face: rawFaces[fi]);
+      track.updateLabels(rawFaces[fi], labelConfirmFrames);
+      _tracks.add(track);
+      result[fi] = track.toDetectedFace();
     }
 
     // Unmatched tracks accumulate misses
@@ -92,19 +102,6 @@ class FaceTracker {
     if (union <= 0) return 0.0;
     return intersection / union;
   }
-
-  DetectedFace _withId(DetectedFace f, int id) => DetectedFace(
-        id: id,
-        x: f.x,
-        y: f.y,
-        width: f.width,
-        height: f.height,
-        genderLabel: f.genderLabel,
-        ageLabel: f.ageLabel,
-        detectionScore: f.detectionScore,
-        leftEyeState: f.leftEyeState,
-        rightEyeState: f.rightEyeState,
-      );
 }
 
 class _Track {
@@ -113,6 +110,66 @@ class _Track {
   final int id;
   DetectedFace face;
   int missed = 0;
+
+  String? confirmedGender;
+  String? confirmedAge;
+  String? pendingGender;
+  int genderStreak = 0;
+  String? pendingAge;
+  int ageStreak = 0;
+
+  void updateLabels(DetectedFace raw, int confirmFrames) {
+    final gender = _advanceLabel(
+      raw.genderLabel,
+      confirmedGender,
+      pendingGender,
+      genderStreak,
+      confirmFrames,
+    );
+    confirmedGender = gender.$1;
+    pendingGender = gender.$2;
+    genderStreak = gender.$3;
+
+    final age = _advanceLabel(
+      raw.ageLabel,
+      confirmedAge,
+      pendingAge,
+      ageStreak,
+      confirmFrames,
+    );
+    confirmedAge = age.$1;
+    pendingAge = age.$2;
+    ageStreak = age.$3;
+  }
+
+  (String?, String?, int) _advanceLabel(
+    String raw,
+    String? confirmed,
+    String? pending,
+    int streak,
+    int confirmFrames,
+  ) {
+    if (confirmed != null) return (confirmed, pending, streak);
+    if (raw == pending) {
+      final next = streak + 1;
+      if (next >= confirmFrames) return (raw, raw, next);
+      return (null, raw, next);
+    }
+    return (null, raw, 1);
+  }
+
+  DetectedFace toDetectedFace() => DetectedFace(
+        id: id,
+        x: face.x,
+        y: face.y,
+        width: face.width,
+        height: face.height,
+        genderLabel: confirmedGender ?? '',
+        ageLabel: confirmedAge ?? '',
+        detectionScore: face.detectionScore,
+        leftEyeState: face.leftEyeState,
+        rightEyeState: face.rightEyeState,
+      );
 }
 
 class _IouPair {

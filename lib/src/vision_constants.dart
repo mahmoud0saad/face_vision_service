@@ -41,3 +41,12 @@ const int kEarBlurKernel = 3;
 
 /// Edge magnitude quantile used as minimum eyelid edge strength.
 const double kEarEdgeQuantile = 0.75;
+
+/// Consecutive agreeing analyze results required to lock gender/age for a track.
+const int kLabelConfirmFrames =2;
+
+/// Default pause between internal confirmation checks in [FaceVisionLiveSession].
+const double kDefaultConfirmSamplingIntervalSeconds = 0.1;
+
+/// Minimum [FaceVisionLiveSession.confirmSamplingIntervalSeconds].
+const double kMinConfirmSamplingIntervalSeconds = 0.0;

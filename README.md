@@ -12,6 +12,7 @@ No Flutter dependency — copy this folder into any Dart/Flutter project.
 - **Stable `id` per face** within a session (IoU tracking between `analyze` calls)
 - JPEG preview in each result (for UI display)
 - Request/response isolate API: start once, analyze many images without reloading models
+- **Live camera stream**: periodic auto-capture + analysis via `FaceVisionLiveSession`
 
 ## Requirements
 
@@ -146,6 +147,69 @@ Future<void> run() async {
 
 Do **not** call `start()` before every image — that reloads everything.
 
+## Live camera stream
+
+Use [`FaceVisionLiveSession`](lib/src/live/face_vision_live_session.dart) to open the camera, run internal confirmation sampling, and emit **confirmed** face results on a user-defined interval.
+
+```dart
+import 'package:face_vision_service/face_vision_service.dart';
+
+Future<void> runLive() async {
+  final session = FaceVisionLiveSession();
+
+  await session.start(
+    intervalSeconds: 3.0,
+    confirmSamplingIntervalSeconds: 0.1,
+    includePreviewJpeg: false, // skip JPEG encode for better performance
+    onStartupProgress: (stage, progress) => print('$stage $progress'),
+  );
+
+  final subscription = session.results.listen(
+    (result) {
+      print('${result.faces.length} faces at ${result.width}x${result.height}');
+      for (final face in result.faces) {
+        print('#${face.id} ${face.genderLabel} ${face.ageLabel}');
+      }
+    },
+    onError: (e, st) => print('Analysis error: $e'),
+  );
+
+  // ... run while needed ...
+
+  await subscription.cancel();
+  await session.stop(); // closes camera and results stream
+  await session.dispose(); // also shuts down vision isolate
+}
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `intervalSeconds` | How often **confirmed** results are emitted on `results` (minimum `0.5`) |
+| `confirmSamplingIntervalSeconds` | Extra pause after each internal analyze completes (default `0.1`, minimum `0.0` for max throughput) |
+| `deviceIndex` | Camera device index (default `0`) |
+| `includePreviewJpeg` | When `false` (default for live), skips JPEG encoding in results |
+| `paths`, `onStartupProgress` | Same as `FaceVisionServiceClient.start()` |
+
+**Behavior:**
+
+- Internal sampling runs continuously between emissions to confirm gender and age (not limited to one image per `intervalSeconds`).
+- Stream events fire every `intervalSeconds`; each event includes only faces where **both** gender and age are confirmed for that ID.
+- If a face is not confirmed before an emission tick, it is **omitted** from that event (`faces` may be empty).
+- Empty camera frames are skipped during internal sampling.
+- Only one analyze runs at a time.
+- Face IDs and locked labels stay stable across stream events within one session.
+- To change intervals, call `stop()` then `start()` with new values.
+
+**Internal check timing (typical):**
+
+| Component | Typical range |
+|-----------|----------------|
+| Camera grab | ~20–50 ms |
+| DNN pipeline (1 face) | ~50–250 ms |
+| **Total per internal check** | **~80–300 ms** |
+
+Effective gap between internal checks: `analyzeDuration + confirmSamplingIntervalSeconds`. Use `confirmSamplingIntervalSeconds: 0.0` for the fastest confirmation on capable hardware.
+
 ### Model loading in Flutter
 
 With a **path** or **git** dependency on desktop, use the default client — models are resolved from the package folder on disk via `Isolate.resolvePackageUri`:
@@ -179,7 +243,7 @@ Export entry: `package:face_vision_service/face_vision_service.dart`
 |-------------------|-------------|
 | `bool isRunning` | `true` after `start`, until `dispose` |
 | `Future<void> start({ModelPaths? paths, StartupProgressCallback? onStartupProgress})` | Spawn worker isolate and load DNNs (bundled models when `paths` is omitted) |
-| `Future<FaceAnalysisResult> analyze(RawImage image)` | Detect + classify one BGR frame |
+| `Future<FaceAnalysisResult> analyze(RawImage image, {bool includePreviewJpeg = true})` | Detect + classify one BGR frame |
 | `Future<void> resetTracker()` | Clear face ID tracks (session reset) |
 | `Future<void> dispose()` | Send shutdown, kill isolate |
 
@@ -194,7 +258,18 @@ Export entry: `package:face_vision_service/face_vision_service.dart`
 |-------|------|-------------|
 | `width`, `height` | `int` | Input image size |
 | `faces` | `List<DetectedFace>` | All detected faces |
-| `previewJpeg` | `Uint8List?` | JPEG of the analyzed frame (quality 80) |
+| `previewJpeg` | `Uint8List?` | JPEG of the analyzed frame (quality 80); omitted when `includePreviewJpeg: false` |
+
+### `FaceVisionLiveSession`
+
+| Method / property | Description |
+|-------------------|-------------|
+| `Stream<FaceAnalysisResult> results` | Confirmed-face events on the emission interval (available after `start()`) |
+| `bool isRunning` | `true` while camera capture loop is active |
+| `FaceVisionServiceClient client` | Underlying vision client |
+| `Future<void> start({required double intervalSeconds, double confirmSamplingIntervalSeconds, ...})` | Start vision service, open camera, begin internal sampling and periodic emission |
+| `Future<void> stop()` | Stop capture, close camera, close results stream |
+| `Future<void> dispose()` | `stop()` plus dispose vision client when session created it |
 
 ### `DetectedFace`
 
@@ -202,8 +277,8 @@ Export entry: `package:face_vision_service/face_vision_service.dart`
 |-------|------|-------------|
 | `id` | `int` | Stable within tracker session (see below) |
 | `x`, `y`, `width`, `height` | `int` | Bounding box in pixel coordinates |
-| `genderLabel` | `String` | `"M"` or `"F"` |
-| `ageLabel` | `String` | e.g. `"(25-32)"` |
+| `genderLabel` | `String` | `"M"` or `"F"` when confirmed; `""` before confirmation |
+| `ageLabel` | `String` | e.g. `"(25-32)"` when confirmed; `""` before confirmation |
 | `detectionScore` | `double` | Face detector confidence |
 | `leftEyeState`, `rightEyeState` | `String` | `"open"`, `"closed"`, or `"unknown"` |
 
@@ -254,7 +329,7 @@ Messages are `Map` with `cmd` (main → worker) or `type` (worker → main).
 | → worker | `init` | — | Copy bundled models from package URI in worker, then load |
 | ← main | `progress` | `stage`, `progress` | Startup progress (`copying_models`, `loading_dnn`) |
 | ← main | `ready` | — | Models loaded |
-| → worker | `analyze` | `bgrBytes`, `width`, `height` | Run pipeline on one frame |
+| → worker | `analyze` | `bgrBytes`, `width`, `height`, `includePreviewJpeg` (optional, default `true`) | Run pipeline on one frame |
 | ← main | `result` | `data` (FaceAnalysisResult map) | Success |
 | → worker | `resetTracker` | — | Clear track list |
 | ← main | `ok` | — | Tracker reset |
@@ -275,7 +350,7 @@ RawImage (BGR bytes)
          → face SSD detection (optional downscale to max width 320)
          → per face: age/gender blobs, eye Laplacian heuristic
     → FaceTracker.assign()  → stable ids
-    → JPEG encode preview
+    → optional JPEG encode preview (when includePreviewJpeg is true)
     → FaceAnalysisResult → SendPort
 ```
 
@@ -289,7 +364,7 @@ RawImage (BGR bytes)
 
 Tunable constants live in [`vision_constants.dart`](lib/src/vision_constants.dart) (confidence threshold, max faces, eye threshold, etc.).
 
-### Stable face IDs ([`face_tracker.dart`](lib/src/tracking/face_tracker.dart))
+### Stable face IDs and label locking ([`face_tracker.dart`](lib/src/tracking/face_tracker.dart))
 
 Tracker state lives **only in the worker isolate** for the lifetime of `start()` … `dispose()`.
 
@@ -297,8 +372,12 @@ Tracker state lives **only in the worker isolate** for the lifetime of `start()`
 2. `FaceTracker.assign()` matches boxes to previous tracks using **IoU** (default threshold `0.3`).
 3. Matched face → **reuse** the same `id`.
 4. Unmatched detection → new `id` (incrementing from 1).
-5. Tracks missed for 3 consecutive analyzes are dropped.
+5. Tracks missed for 15 consecutive analyzes are dropped (default `maxMissedFrames`).
 6. `resetTracker()` clears all tracks; next IDs start at 1.
+
+**Gender and age** lock independently after `kLabelConfirmFrames` (default `3`) consecutive agreeing analyze results for the same track. Until locked, `genderLabel` and `ageLabel` are `""` (never raw flipping values). After lock, labels stay fixed for that ID until `resetTracker()`.
+
+Eye states (`leftEyeState`, `rightEyeState`) update every analyze.
 
 Same person in a similar position across two `analyze` calls → same `id`. IDs are **not** persisted across `dispose()` or app restarts.
 
@@ -324,6 +403,8 @@ face_vision_service/
         │   └── eye_state_analyzer.dart
         ├── tracking/
         │   └── face_tracker.dart
+        ├── live/
+        │   └── face_vision_live_session.dart
         └── isolate/
             ├── service_client.dart       # main-isolate API
             └── service_isolate_entry.dart  # worker entry (top-level)

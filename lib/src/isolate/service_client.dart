@@ -95,7 +95,13 @@ class FaceVisionServiceClient {
   }
 
   /// Analyze a single image. Returns the result with tracked face IDs.
-  Future<FaceAnalysisResult> analyze(RawImage image) async {
+  ///
+  /// Set [includePreviewJpeg] to false to skip JPEG encoding for better
+  /// performance during live capture.
+  Future<FaceAnalysisResult> analyze(
+    RawImage image, {
+    bool includePreviewJpeg = true,
+  }) async {
     if (_workerSendPort == null) {
       throw StateError('Service not started. Call start() first.');
     }
@@ -106,6 +112,7 @@ class FaceVisionServiceClient {
       'bgrBytes': image.bgrBytes,
       'width': image.width,
       'height': image.height,
+      'includePreviewJpeg': includePreviewJpeg,
     });
 
     return _analyzeCompleter!.future.timeout(
@@ -146,6 +153,7 @@ class FaceVisionServiceClient {
         if (_initCompleter != null && !_initCompleter!.isCompleted) {
           _initCompleter!.complete();
         }
+        break;
       case 'progress':
         final stage = message['stage'] as String?;
         if (stage != null) {
@@ -154,13 +162,16 @@ class FaceVisionServiceClient {
             (message['progress'] as num?)?.toDouble(),
           );
         }
+        break;
       case 'result':
         final data = message['data'] as Map<Object?, Object?>?;
         if (data != null && _analyzeCompleter != null) {
           _analyzeCompleter!.complete(FaceAnalysisResult.fromMap(data));
         }
+        break;
       case 'ok':
         _resetCompleter?.complete();
+        break;
       case 'error':
         final err = StateError(
             message['message']?.toString() ?? 'Vision service error');
@@ -170,8 +181,10 @@ class FaceVisionServiceClient {
             !_analyzeCompleter!.isCompleted) {
           _analyzeCompleter!.completeError(err);
         }
+        break;
       case 'stopped':
         _stopCompleter?.complete();
+        break;
     }
   }
 

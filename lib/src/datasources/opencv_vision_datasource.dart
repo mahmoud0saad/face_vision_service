@@ -2,6 +2,7 @@ import 'package:opencv_dart/opencv_dart.dart' as cv;
 
 import '../entities/detected_face.dart';
 import '../entities/model_paths.dart';
+import '../entities/vision_detection_config.dart';
 import '../vision_constants.dart';
 import 'ear_eye_state_analyzer.dart';
 import 'eye_state_analyzer.dart';
@@ -9,10 +10,15 @@ import 'eye_state_combiner.dart';
 import 'face_box_geometry.dart';
 
 class OpenCvVisionDatasource {
+  OpenCvVisionDatasource({VisionDetectionConfig? detectionConfig})
+      : detectionConfig = detectionConfig ?? const VisionDetectionConfig();
+
   cv.Net? _faceNet;
   cv.Net? _ageNet;
   cv.Net? _genderNet;
   bool _loaded = false;
+
+  VisionDetectionConfig detectionConfig;
 
   final EyeStateAnalyzer _laplacianEyeAnalyzer = EyeStateAnalyzer();
   final EarEyeStateAnalyzer _earEyeAnalyzer = EarEyeStateAnalyzer();
@@ -108,9 +114,12 @@ class OpenCvVisionDatasource {
   }
 
   double _processingScale(int cols, int rows) {
+    final maxWidth = detectionConfig.processMaxWidth;
+    if (maxWidth <= 0) return 1.0;
+
     final maxDim = cols > rows ? cols : rows;
-    if (maxDim <= kProcessMaxWidth) return 1.0;
-    return kProcessMaxWidth / maxDim;
+    if (maxDim <= maxWidth) return 1.0;
+    return maxWidth / maxDim;
   }
 
   List<_FaceBoxScratch> _detectFaceBoxes(cv.Net faceNet, cv.Mat frame) {
@@ -121,7 +130,10 @@ class OpenCvVisionDatasource {
     final faceBlob = cv.blobFromImage(
       frame,
       scalefactor: 1.0,
-      size: (kFaceDetectWidth, kFaceDetectHeight),
+      size: (
+        detectionConfig.faceDetectWidth,
+        detectionConfig.faceDetectHeight,
+      ),
       mean: cv.Scalar(104, 177, 123),
       swapRB: false,
     );
@@ -137,7 +149,8 @@ class OpenCvVisionDatasource {
         if (found.length >= kMaxFacesToClassify) break;
 
         final confidence = _detectionValue(detGrid, i, 2);
-        if (confidence == null || confidence < kFaceConfidenceThreshold) {
+        if (confidence == null ||
+            confidence < detectionConfig.confidenceThreshold) {
           continue;
         }
 
@@ -150,7 +163,8 @@ class OpenCvVisionDatasource {
 
         final w = (x2 - x1).clamp(1, frameWidth - x1);
         final h = (y2 - y1).clamp(1, frameHeight - y1);
-        if (w < 20 || h < 20) continue;
+        final minBox = detectionConfig.minFaceBoxPx;
+        if (w < minBox || h < minBox) continue;
 
         found.add(
             _FaceBoxScratch(x1: x1, y1: y1, w: w, h: h, score: confidence));

@@ -11,15 +11,18 @@ const List<String> kAgeLabels = [
 
 const List<String> kGenderLabels = ['M', 'F'];
 
-const double kFaceConfidenceThreshold = 0.6;
+const double kFaceConfidenceThreshold = 0.45;
 
-const int kFaceDetectWidth = 128;
-const int kFaceDetectHeight = 96;
+const int kFaceDetectWidth = 300;
+const int kFaceDetectHeight = 300;
 
 const int kAgeGenderInputSize = 227;
 
-/// Downscale frames before DNN (major speedup on HD webcams).
-const int kProcessMaxWidth = 320;
+/// Downscale frames before DNN when the longest side exceeds this value.
+const int kProcessMaxWidth = 640;
+
+/// Minimum face box width/height in the detection work frame (pixels).
+const int kMinFaceBoxPx = 10;
 
 /// Max faces to run age/gender on per frame.
 const int kMaxFacesToClassify = 14;
@@ -43,7 +46,7 @@ const int kEarBlurKernel = 3;
 const double kEarEdgeQuantile = 0.75;
 
 /// Consecutive agreeing analyze results required to lock gender/age for a track.
-const int kLabelConfirmFrames =2;
+const int kLabelConfirmFrames =5;
 
 /// Default pause between internal confirmation checks in [FaceVisionLiveSession].
 const double kDefaultConfirmSamplingIntervalSeconds = 0.1;

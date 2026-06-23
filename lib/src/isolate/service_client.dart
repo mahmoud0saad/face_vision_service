@@ -6,6 +6,7 @@ import '../bundled_models.dart';
 import '../entities/face_analysis_result.dart';
 import '../entities/model_paths.dart';
 import '../entities/raw_image.dart';
+import '../entities/vision_detection_config.dart';
 import 'service_isolate_entry.dart';
 
 /// Client that communicates with the vision service isolate.
@@ -43,6 +44,7 @@ class FaceVisionServiceClient {
   /// Pass [onStartupProgress] to update a loading UI during the slow startup.
   Future<void> start({
     ModelPaths? paths,
+    VisionDetectionConfig? detectionConfig,
     StartupProgressCallback? onStartupProgress,
   }) async {
     if (_isolate != null) return;
@@ -70,9 +72,16 @@ class FaceVisionServiceClient {
     // Send init command (model prep runs in the worker when possible)
     _initCompleter = Completer<void>();
 
+    final initMessage = <String, Object?>{
+      'cmd': 'init',
+      if (detectionConfig != null)
+        'detectionConfig': detectionConfig.toMap(),
+    };
+
     if (paths != null) {
       onStartupProgress?.call('loading_dnn', null);
-      _workerSendPort!.send({'cmd': 'init', 'paths': paths.toMap()});
+      initMessage['paths'] = paths.toMap();
+      _workerSendPort!.send(initMessage);
     } else if (_readBytes != null) {
       onStartupProgress?.call('copying_models', 0);
       final modelBytes = await BundledModels.readAllToMemory(
@@ -80,9 +89,10 @@ class FaceVisionServiceClient {
         onProgress: (progress) =>
             onStartupProgress?.call('copying_models', progress),
       );
-      _workerSendPort!.send({'cmd': 'init', 'modelBytes': modelBytes});
+      initMessage['modelBytes'] = modelBytes;
+      _workerSendPort!.send(initMessage);
     } else {
-      _workerSendPort!.send({'cmd': 'init'});
+      _workerSendPort!.send(initMessage);
     }
 
     await _initCompleter!.future.timeout(

@@ -7,3 +7,6 @@ environment:
 
 dependencies:
   opencv_dart: 1.2.4
+
+dev_dependencies:
+  test: ^1.25.0

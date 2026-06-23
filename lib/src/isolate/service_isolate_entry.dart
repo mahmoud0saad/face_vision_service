@@ -7,6 +7,7 @@ import '../bundled_models.dart';
 import '../datasources/opencv_vision_datasource.dart';
 import '../entities/face_analysis_result.dart';
 import '../entities/model_paths.dart';
+import '../entities/vision_detection_config.dart';
 import '../tracking/face_tracker.dart';
 
 /// Top-level entry point for the vision service isolate.
@@ -24,6 +25,12 @@ void serviceIsolateEntry(SendPort mainSendPort) {
     switch (cmd) {
       case 'init':
         try {
+          final detectionConfigRaw =
+              message['detectionConfig'] as Map<Object?, Object?>?;
+          if (detectionConfigRaw != null) {
+            vision.detectionConfig =
+                VisionDetectionConfig.fromMap(detectionConfigRaw);
+          }
           final paths = await _resolveModelPaths(message, mainSendPort);
           mainSendPort.send({
             'type': 'progress',

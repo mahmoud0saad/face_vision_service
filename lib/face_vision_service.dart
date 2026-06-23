@@ -9,6 +9,7 @@ export 'src/entities/detected_face.dart';
 export 'src/entities/face_analysis_result.dart';
 export 'src/entities/model_paths.dart';
 export 'src/entities/raw_image.dart';
+export 'src/entities/vision_detection_config.dart';
 export 'src/isolate/service_client.dart';
 export 'src/live/face_vision_live_session.dart';
 export 'src/tracking/face_tracker.dart';

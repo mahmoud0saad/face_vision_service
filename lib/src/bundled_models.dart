@@ -2,6 +2,8 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart' show rootBundle;
+
 import 'entities/model_paths.dart';
 
 /// Reports startup stage and optional progress in `[0, 1]`.
@@ -10,6 +12,9 @@ typedef StartupProgressCallback = void Function(String stage, double? progress);
 /// Loads bundled model files shipped under [lib/assets/models/].
 class BundledModels {
   BundledModels._();
+
+  static const _packageAssetPrefix = 'packages/face_vision_service';
+  static const _assetDir = 'lib/assets/models';
 
   static const bundledAssetNames = [
     'opencv_face_detector.pbtxt',
@@ -20,11 +25,17 @@ class BundledModels {
     'gender_net.caffemodel',
   ];
 
+  /// Reads a bundled model file from the package Flutter assets.
+  static Future<Uint8List> readFromPackageAssets(String relativePath) async {
+    final data = await rootBundle.load('$_packageAssetPrefix/$relativePath');
+    return data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+  }
+
+  static String _assetPath(String name) => '$_assetDir/$name';
+
   /// Copies bundled models to a writable cache directory and returns [ModelPaths].
   ///
   /// By default reads from the package via [Isolate.resolvePackageUri].
-  /// On Flutter, pass [readBytes] that loads
-  /// `packages/face_vision_service/assets/models/<file>`.
   static Future<ModelPaths> loadToDisk({
     Future<Uint8List> Function(String relativePath)? readBytes,
     String? cacheDir,
@@ -38,7 +49,7 @@ class BundledModels {
       final name = bundledAssetNames[i];
       final outFile = File('${modelsDir.path}/$name');
       if (!await outFile.exists()) {
-        final bytes = await reader('assets/models/$name');
+        final bytes = await reader(_assetPath(name));
         await outFile.writeAsBytes(bytes);
       }
       await Future<void>.delayed(Duration.zero);
@@ -48,17 +59,18 @@ class BundledModels {
     return _pathsForDir(modelsDir.path);
   }
 
-  /// Reads all bundled models into memory (for Flutter [readBytes] flow).
+  /// Reads all bundled models into memory from package assets.
   static Future<Map<String, Uint8List>> readAllToMemory({
-    required Future<Uint8List> Function(String relativePath) readBytes,
+    Future<Uint8List> Function(String relativePath)? readBytes,
     void Function(double progress)? onProgress,
   }) async {
+    final reader = readBytes ?? readFromPackageAssets;
     final result = <String, Uint8List>{};
     final total = bundledAssetNames.length;
 
     for (var i = 0; i < bundledAssetNames.length; i++) {
       final name = bundledAssetNames[i];
-      result[name] = await readBytes('assets/models/$name');
+      result[name] = await reader(_assetPath(name));
       await Future<void>.delayed(Duration.zero);
       onProgress?.call((i + 1) / total);
     }
@@ -117,8 +129,7 @@ class BundledModels {
     );
     if (uri == null) {
       throw StateError(
-        'Could not resolve package asset: face_vision_service/$relativePath. '
-        'On Flutter, pass readBytes to load packages/face_vision_service/$relativePath.',
+        'Could not resolve package asset: face_vision_service/$relativePath.',
       );
     }
     final file = File.fromUri(uri);

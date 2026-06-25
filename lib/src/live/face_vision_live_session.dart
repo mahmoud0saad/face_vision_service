@@ -3,7 +3,6 @@ import 'dart:async';
 import '../bundled_models.dart';
 import '../entities/detected_face.dart';
 import '../entities/face_analysis_result.dart';
-import '../entities/model_paths.dart';
 import '../entities/raw_image.dart';
 import '../entities/vision_detection_config.dart';
 import '../isolate/service_client.dart';
@@ -62,7 +61,6 @@ class FaceVisionLiveSession {
         kDefaultConfirmSamplingIntervalSeconds,
     int deviceIndex = 0,
     bool includePreviewJpeg = false,
-    ModelPaths? paths,
     VisionDetectionConfig? detectionConfig,
     StartupProgressCallback? onStartupProgress,
   }) async {
@@ -91,7 +89,6 @@ class FaceVisionLiveSession {
 
     if (!_client.isRunning) {
       await _client.start(
-        paths: paths,
         detectionConfig: detectionConfig,
         onStartupProgress: onStartupProgress,
       );

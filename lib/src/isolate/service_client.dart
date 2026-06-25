@@ -1,10 +1,8 @@
 import 'dart:async';
 import 'dart:isolate';
-import 'dart:typed_data';
 
 import '../bundled_models.dart';
 import '../entities/face_analysis_result.dart';
-import '../entities/model_paths.dart';
 import '../entities/raw_image.dart';
 import '../entities/vision_detection_config.dart';
 import 'service_isolate_entry.dart';
@@ -19,11 +17,7 @@ import 'service_isolate_entry.dart';
 /// await client.dispose();
 /// ```
 class FaceVisionServiceClient {
-  FaceVisionServiceClient({
-    Future<Uint8List> Function(String relativePath)? readBytes,
-  }) : _readBytes = readBytes;
-
-  final Future<Uint8List> Function(String relativePath)? _readBytes;
+  FaceVisionServiceClient();
 
   Isolate? _isolate;
   SendPort? _workerSendPort;
@@ -38,12 +32,11 @@ class FaceVisionServiceClient {
 
   bool get isRunning => _isolate != null;
 
-  /// Spawns the isolate and loads models. Must be called before [analyze].
+  /// Spawns the isolate and loads bundled models from package assets.
+  /// Must be called before [analyze].
   ///
-  /// When [paths] is omitted, loads bundled models from the package.
   /// Pass [onStartupProgress] to update a loading UI during the slow startup.
   Future<void> start({
-    ModelPaths? paths,
     VisionDetectionConfig? detectionConfig,
     StartupProgressCallback? onStartupProgress,
   }) async {
@@ -78,22 +71,13 @@ class FaceVisionServiceClient {
         'detectionConfig': detectionConfig.toMap(),
     };
 
-    if (paths != null) {
-      onStartupProgress?.call('loading_dnn', null);
-      initMessage['paths'] = paths.toMap();
-      _workerSendPort!.send(initMessage);
-    } else if (_readBytes != null) {
-      onStartupProgress?.call('copying_models', 0);
-      final modelBytes = await BundledModels.readAllToMemory(
-        readBytes: _readBytes,
-        onProgress: (progress) =>
-            onStartupProgress?.call('copying_models', progress),
-      );
-      initMessage['modelBytes'] = modelBytes;
-      _workerSendPort!.send(initMessage);
-    } else {
-      _workerSendPort!.send(initMessage);
-    }
+    onStartupProgress?.call('copying_models', 0);
+    final modelBytes = await BundledModels.readAllToMemory(
+      onProgress: (progress) =>
+          onStartupProgress?.call('copying_models', progress),
+    );
+    initMessage['modelBytes'] = modelBytes;
+    _workerSendPort!.send(initMessage);
 
     await _initCompleter!.future.timeout(
       const Duration(seconds: 120),

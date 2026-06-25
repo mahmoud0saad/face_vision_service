@@ -1,8 +1,8 @@
 # face_vision_service
 
-Portable Dart package for face analysis: detection, age/gender classification, eye open/closed state, and **stable face IDs** across multiple images. All heavy OpenCV work runs in a **background isolate** so your app UI stays responsive.
+Portable Flutter package for face analysis: detection, age/gender classification, eye open/closed state, and **stable face IDs** across multiple images. All heavy OpenCV work runs in a **background isolate** so your app UI stays responsive.
 
-No Flutter dependency — copy this folder into any Dart/Flutter project.
+Requires Flutter SDK — add as a dependency to your Flutter app.
 
 ## Features
 
@@ -16,14 +16,15 @@ No Flutter dependency — copy this folder into any Dart/Flutter project.
 
 ## Requirements
 
-### Dart SDK
+### Flutter SDK
 
+- Flutter SDK (package depends on `flutter` for bundled asset loading)
 - SDK `^3.9.0`
 - Dependency: `opencv_dart` 1.2.4 (native OpenCV must be available on the target platform)
 
 ### Bundled model files
 
-Six pretrained models ship with the package under `lib/assets/models/` (~94 MB total). On first `start()`, they are copied to a temp cache directory so OpenCV can load them from disk. Model copy and DNN loading run in the **worker isolate** when possible so the UI thread stays responsive.
+Six pretrained models ship with the package under `lib/assets/models/` (~94 MB total). On first `start()`, they are loaded from package assets and copied to a temp cache directory so OpenCV can load them from disk. No asset or path configuration is needed in your app.
 
 ### Startup time and UI
 
@@ -59,7 +60,7 @@ Call `start()` once at app launch (not before every frame). Subsequent `analyze(
 | `gender_net.caffemodel` | Gender network |
 | `gender_deploy.prototxt` | Gender deploy |
 
-Override with custom files via `start(paths: ModelPaths(...))` if needed.
+Models are declared in the package `pubspec.yaml` and loaded automatically on `start()`.
 
 ## Installation
 
@@ -78,8 +79,6 @@ dependencies:
 Then run:
 
 ```bash
-dart pub get
-# or, in a Flutter project:
 flutter pub get
 ```
 
@@ -103,7 +102,7 @@ dependencies:
 
 ### Copy into your project
 
-Copy this entire folder (including `lib/assets/models/`), add a `path:` dependency as above, and run `dart pub get`.
+Copy this entire folder (including `lib/assets/models/`), add a `path:` dependency as above, and run `flutter pub get`.
 
 ## Quick start
 
@@ -188,7 +187,7 @@ Future<void> runLive() async {
 | `confirmSamplingIntervalSeconds` | Extra pause after each internal analyze completes (default `0.1`, minimum `0.0` for max throughput) |
 | `deviceIndex` | Camera device index (default `0`) |
 | `includePreviewJpeg` | When `false` (default for live), skips JPEG encoding in results |
-| `paths`, `onStartupProgress` | Same as `FaceVisionServiceClient.start()` |
+| `onStartupProgress` | Same as `FaceVisionServiceClient.start()` |
 
 **Behavior:**
 
@@ -210,29 +209,6 @@ Future<void> runLive() async {
 
 Effective gap between internal checks: `analyzeDuration + confirmSamplingIntervalSeconds`. Use `confirmSamplingIntervalSeconds: 0.0` for the fastest confirmation on capable hardware.
 
-### Model loading in Flutter
-
-With a **path** or **git** dependency on desktop, use the default client — models are resolved from the package folder on disk via `Isolate.resolvePackageUri`:
-
-```dart
-final client = FaceVisionServiceClient();
-await client.start();
-```
-
-For mobile release builds where package files are not directly on disk, pass a `readBytes` callback:
-
-```dart
-final client = FaceVisionServiceClient(
-  readBytes: (relativePath) async {
-    final data = await rootBundle.load('packages/face_vision_service/$relativePath');
-    return data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
-  },
-);
-await client.start();
-```
-
-When using `readBytes`, declare models in the package `pubspec.yaml` under `flutter: assets` so they are bundled into the app.
-
 ## Public API
 
 Export entry: `package:face_vision_service/face_vision_service.dart`
@@ -242,7 +218,7 @@ Export entry: `package:face_vision_service/face_vision_service.dart`
 | Method / property | Description |
 |-------------------|-------------|
 | `bool isRunning` | `true` after `start`, until `dispose` |
-| `Future<void> start({ModelPaths? paths, StartupProgressCallback? onStartupProgress})` | Spawn worker isolate and load DNNs (bundled models when `paths` is omitted) |
+| `Future<void> start({VisionDetectionConfig? detectionConfig, StartupProgressCallback? onStartupProgress})` | Spawn worker isolate and load bundled DNN models |
 | `Future<FaceAnalysisResult> analyze(RawImage image, {bool includePreviewJpeg = true})` | Detect + classify one BGR frame |
 | `Future<void> resetTracker()` | Clear face ID tracks (session reset) |
 | `Future<void> dispose()` | Send shutdown, kill isolate |
@@ -282,10 +258,6 @@ Export entry: `package:face_vision_service/face_vision_service.dart`
 | `detectionScore` | `double` | Face detector confidence |
 | `leftEyeState`, `rightEyeState` | `String` | `"open"`, `"closed"`, or `"unknown"` |
 
-### `ModelPaths` and `BundledModels`
-
-`ModelPaths` holds paths to the six model files on disk (used internally and for `start(paths: customPaths)`). `BundledModels.loadToDisk()` copies package assets to a cache directory and returns `ModelPaths`.
-
 ### `FaceTracker` (exported, optional)
 
 Pure-Dart tracker used inside the isolate. You normally do not instantiate it in the app; use `resetTracker()` on the client instead. Exported for testing or custom pipelines.
@@ -324,9 +296,8 @@ Messages are `Map` with `cmd` (main → worker) or `type` (worker → main).
 
 | Direction | Command / type | Payload | Meaning |
 |-----------|----------------|---------|---------|
-| → worker | `init` | `paths` (optional) | Load models from disk paths |
-| → worker | `init` | `modelBytes` (optional) | Write bundled bytes to cache, then load |
-| → worker | `init` | — | Copy bundled models from package URI in worker, then load |
+| → worker | `init` | `modelBytes` | Read bundled assets on main isolate, write to cache in worker, then load |
+| → worker | `init` | — | Fallback: copy bundled models from package URI in worker, then load |
 | ← main | `progress` | `stage`, `progress` | Startup progress (`copying_models`, `loading_dnn`) |
 | ← main | `ready` | — | Models loaded |
 | → worker | `analyze` | `bgrBytes`, `width`, `height`, `includePreviewJpeg` (optional, default `true`) | Run pipeline on one frame |

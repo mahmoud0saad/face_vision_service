@@ -94,11 +94,6 @@ Future<ModelPaths> _resolveModelPaths(
   Map<Object?, Object?> message,
   SendPort mainSendPort,
 ) async {
-  final pathsRaw = message['paths'] as Map<Object?, Object?>?;
-  if (pathsRaw != null) {
-    return ModelPaths.fromMap(pathsRaw.cast<String, String>());
-  }
-
   final modelBytesRaw = message['modelBytes'] as Map<Object?, Object?>?;
   if (modelBytesRaw != null) {
     final filesByName = modelBytesRaw.map(

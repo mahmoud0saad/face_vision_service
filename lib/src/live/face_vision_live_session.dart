@@ -30,6 +30,8 @@ class FaceVisionLiveSession {
   StreamController<FaceAnalysisResult>? _controller;
   Timer? _emitTimer;
   bool _running = false;
+  bool _starting = false;
+  int _lifecycleGeneration = 0;
   bool _isAnalyzing = false;
   bool _includePreviewJpeg = false;
   double _confirmSamplingIntervalSeconds =
@@ -53,6 +55,12 @@ class FaceVisionLiveSession {
 
   bool get isRunning => _running;
 
+  /// True while [start] is in progress (camera / vision service not ready yet).
+  bool get isStarting => _starting;
+
+  /// True while [start] is in progress or the capture loop is active.
+  bool get isActive => _running || _starting;
+
   /// Starts the vision service (if needed), opens the camera, begins internal
   /// confirmation sampling, and emits confirmed results every [intervalSeconds].
   Future<void> start({
@@ -66,6 +74,9 @@ class FaceVisionLiveSession {
   }) async {
     if (_running) {
       throw StateError('Session already running. Call stop() first.');
+    }
+    if (_starting) {
+      throw StateError('Session start already in progress.');
     }
     if (intervalSeconds < _minIntervalSeconds) {
       throw ArgumentError.value(
@@ -82,31 +93,57 @@ class FaceVisionLiveSession {
       );
     }
 
+    final generation = _lifecycleGeneration;
+    _starting = true;
+
     _includePreviewJpeg = includePreviewJpeg;
     _confirmSamplingIntervalSeconds = confirmSamplingIntervalSeconds;
     _cachedResult = null;
     _controller = StreamController<FaceAnalysisResult>.broadcast();
 
-    if (!_client.isRunning) {
-      await _client.start(
-        detectionConfig: detectionConfig,
-        onStartupProgress: onStartupProgress,
+    try {
+      if (!_client.isRunning) {
+        await _client.start(
+          detectionConfig: detectionConfig,
+          onStartupProgress: onStartupProgress,
+        );
+        if (_isCancelled(generation)) return;
+      }
+
+      await _camera.open(deviceIndex: deviceIndex);
+      if (_isCancelled(generation)) return;
+
+      _running = true;
+      final emitInterval = Duration(
+        milliseconds: (intervalSeconds * 1000).round(),
       );
+      _emitTimer = Timer.periodic(emitInterval, (_) => _emitToUser());
+      unawaited(_internalSamplingLoop());
+    } finally {
+      if (generation == _lifecycleGeneration) {
+        _starting = false;
+      }
+      if (_isCancelled(generation) && !_running) {
+        await _abortStart();
+      }
     }
-
-    await _camera.open(deviceIndex: deviceIndex);
-
-    _running = true;
-    final emitInterval = Duration(
-      milliseconds: (intervalSeconds * 1000).round(),
-    );
-    _emitTimer = Timer.periodic(emitInterval, (_) => _emitToUser());
-    unawaited(_internalSamplingLoop());
   }
 
   /// Stops capture, closes the camera, and closes the results stream.
+  ///
+  /// Also cancels an in-flight [start] so callers can shut down before the
+  /// session becomes [isRunning].
   Future<void> stop() async {
-    if (!_running) return;
+    if (!_running && !_starting) return;
+
+    _lifecycleGeneration++;
+
+    if (_starting) {
+      while (_starting) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      if (!_running) return;
+    }
 
     _running = false;
     _emitTimer?.cancel();
@@ -191,5 +228,21 @@ class FaceVisionLiveSession {
 
   static bool _isConfirmed(DetectedFace face) =>
       face.genderLabel.isNotEmpty && face.ageLabel.isNotEmpty;
+
+  bool _isCancelled(int generation) => generation != _lifecycleGeneration;
+
+  Future<void> _abortStart() async {
+    _running = false;
+    _emitTimer?.cancel();
+    _emitTimer = null;
+
+    try {
+      await _camera.close();
+    } catch (_) {}
+
+    await _controller?.close();
+    _controller = null;
+    _cachedResult = null;
+  }
 }
 

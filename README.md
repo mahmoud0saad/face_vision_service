@@ -327,7 +327,7 @@ RawImage (BGR bytes)
 | Step | Model / method |
 |------|----------------|
 | Detect faces | YuNet `FaceDetectorYN` (input size set per frame) |
-| Age / gender | GoogleNet ONNX nets on 224×224 face crop, BGR mean (104, 117, 123) |
+| Age / gender | GoogleNet ONNX nets on 224×224 face crop, RGB input (BGR frame swapped via `swapRB`), mean (104, 117, 123) in R,G,B order |
 | Age ranges | 8 Adience buckets remapped to custom ranges (`0-10 … 50-70`) via [`vision_constants.dart`](lib/src/vision_constants.dart) `kAgeCustomRanges` |
 | Eyes | [`eye_state_analyzer.dart`](lib/src/datasources/eye_state_analyzer.dart) — ROI above face, Laplacian std-dev vs threshold |
 

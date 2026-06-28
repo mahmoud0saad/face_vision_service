@@ -39,8 +39,9 @@ const int kYuNetTopK = 5000;
 /// Square input size for the GoogleNet age/gender blobs.
 const int kAgeGenderInputSize = 224;
 
-/// Per-channel mean subtraction for the GoogleNet age/gender models (BGR order,
-/// no channel swap).
+/// Per-channel mean subtraction for the GoogleNet age/gender models. The models
+/// expect RGB input (the blob is built with swapRB: true on BGR frames), so the
+/// mean is applied in R,G,B order to match the reference levi_googlenet.py.
 const List<double> kAgeGenderMean = [104.0, 117.0, 123.0];
 
 /// Downscale frames before DNN when the longest side exceeds this value.

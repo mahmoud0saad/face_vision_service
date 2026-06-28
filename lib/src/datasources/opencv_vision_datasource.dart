@@ -212,7 +212,10 @@ class OpenCvVisionDatasource {
         kAgeGenderMean[1],
         kAgeGenderMean[2],
       ),
-      swapRB: false,
+      // GoogLeNet age/gender ONNX models expect RGB input (see reference
+      // levi_googlenet.py, which does BGR2RGB before mean subtraction). Frames
+      // here are BGR, so swap to RGB; mean is then applied in R,G,B order.
+      swapRB: true,
     );
     resized.dispose();
     return blob;

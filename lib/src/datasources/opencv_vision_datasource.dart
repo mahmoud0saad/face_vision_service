@@ -13,7 +13,7 @@ class OpenCvVisionDatasource {
   OpenCvVisionDatasource({VisionDetectionConfig? detectionConfig})
       : detectionConfig = detectionConfig ?? const VisionDetectionConfig();
 
-  cv.Net? _faceNet;
+  cv.FaceDetectorYN? _detector;
   cv.Net? _ageNet;
   cv.Net? _genderNet;
   bool _loaded = false;
@@ -27,22 +27,27 @@ class OpenCvVisionDatasource {
   Future<void> loadModels(ModelPaths paths) async {
     if (_loaded) return;
 
-    _faceNet = cv.Net.fromTensorflow(
+    _detector = cv.FaceDetectorYN.fromFile(
       paths.faceModel,
-      config: paths.faceProto,
+      '',
+      // Placeholder input size; reset per-frame in [_detectFaceBoxes].
+      (320, 320),
+      scoreThreshold: detectionConfig.confidenceThreshold,
+      nmsThreshold: detectionConfig.nmsThreshold,
+      topK: detectionConfig.topK,
     );
-    _ageNet = cv.Net.fromCaffe(paths.ageProto, paths.ageModel);
-    _genderNet = cv.Net.fromCaffe(paths.genderProto, paths.genderModel);
+    _ageNet = cv.Net.fromOnnx(paths.ageModel);
+    _genderNet = cv.Net.fromOnnx(paths.genderModel);
 
     _loaded = true;
   }
 
   /// Detects faces and classifies age/gender/eyes. Returns untracked faces.
   List<DetectedFace> detectAndClassify(cv.Mat frame) {
-    final faceNet = _faceNet;
+    final detector = _detector;
     final ageNet = _ageNet;
     final genderNet = _genderNet;
-    if (faceNet == null || ageNet == null || genderNet == null) return [];
+    if (detector == null || ageNet == null || genderNet == null) return [];
 
     final scale = _processingScale(frame.cols, frame.rows);
     final bool ownsWork;
@@ -60,15 +65,15 @@ class OpenCvVisionDatasource {
     final invScale = 1.0 / scale;
 
     try {
-      final boxes = _detectFaceBoxes(faceNet, work);
+      final boxes = _detectFaceBoxes(detector, work);
       final faces = <DetectedFace>[];
       var classified = 0;
 
       for (final box in boxes) {
         if (classified >= kMaxFacesToClassify) break;
 
-        final x1 = (box.x1 * invScale).round();
-        final y1 = (box.y1 * invScale).round();
+        final x1 = (box.x1 * invScale).round().clamp(0, frame.cols - 1);
+        final y1 = (box.y1 * invScale).round().clamp(0, frame.rows - 1);
         final w = (box.w * invScale).round().clamp(1, frame.cols - x1);
         final h = (box.h * invScale).round().clamp(1, frame.rows - y1);
 
@@ -122,55 +127,49 @@ class OpenCvVisionDatasource {
     return maxWidth / maxDim;
   }
 
-  List<_FaceBoxScratch> _detectFaceBoxes(cv.Net faceNet, cv.Mat frame) {
-    final frameHeight = frame.rows;
+  List<_FaceBoxScratch> _detectFaceBoxes(
+    cv.FaceDetectorYN detector,
+    cv.Mat frame,
+  ) {
     final frameWidth = frame.cols;
+    final frameHeight = frame.rows;
     final found = <_FaceBoxScratch>[];
 
-    final faceBlob = cv.blobFromImage(
-      frame,
-      scalefactor: 1.0,
-      size: (
-        detectionConfig.faceDetectWidth,
-        detectionConfig.faceDetectHeight,
-      ),
-      mean: cv.Scalar(104, 177, 123),
-      swapRB: false,
-    );
-    faceNet.setInput(faceBlob);
-    final detections = faceNet.forward();
-    faceBlob.dispose();
-
-    final (detGrid, ownsGrid) = _asDetectionGrid(detections);
-    final detCount = detGrid.rows;
+    // YuNet requires the network input size to match the image it runs on.
+    detector.setInputSize((frameWidth, frameHeight));
+    final detections = detector.detect(frame);
 
     try {
+      // Detections are a [num_faces, 15] CV_32F matrix:
+      // cols 0-3 = x, y, w, h (pixels); col 14 = score.
+      final detCount = detections.rows;
       for (var i = 0; i < detCount; i++) {
         if (found.length >= kMaxFacesToClassify) break;
 
-        final confidence = _detectionValue(detGrid, i, 2);
-        if (confidence == null ||
-            confidence < detectionConfig.confidenceThreshold) {
+        final rawX = _matValue(detections, i, 0);
+        final rawY = _matValue(detections, i, 1);
+        final rawW = _matValue(detections, i, 2);
+        final rawH = _matValue(detections, i, 3);
+        final score = _matValue(detections, i, 14);
+        if (rawX == null ||
+            rawY == null ||
+            rawW == null ||
+            rawH == null ||
+            score == null) {
           continue;
         }
 
-        final x1 = _normToPixel(_detectionValue(detGrid, i, 3), frameWidth);
-        final y1 = _normToPixel(_detectionValue(detGrid, i, 4), frameHeight);
-        final x2 = _normToPixel(_detectionValue(detGrid, i, 5), frameWidth);
-        final y2 = _normToPixel(_detectionValue(detGrid, i, 6), frameHeight);
-        if (x1 == null || y1 == null || x2 == null || y2 == null) continue;
-        if (x2 <= x1 || y2 <= y1) continue;
+        final x1 = rawX.round().clamp(0, frameWidth - 1);
+        final y1 = rawY.round().clamp(0, frameHeight - 1);
+        final w = rawW.round().clamp(1, frameWidth - x1);
+        final h = rawH.round().clamp(1, frameHeight - y1);
 
-        final w = (x2 - x1).clamp(1, frameWidth - x1);
-        final h = (y2 - y1).clamp(1, frameHeight - y1);
         final minBox = detectionConfig.minFaceBoxPx;
         if (w < minBox || h < minBox) continue;
 
-        found.add(
-            _FaceBoxScratch(x1: x1, y1: y1, w: w, h: h, score: confidence));
+        found.add(_FaceBoxScratch(x1: x1, y1: y1, w: w, h: h, score: score));
       }
     } finally {
-      if (ownsGrid) detGrid.dispose();
       detections.dispose();
     }
 
@@ -197,7 +196,7 @@ class OpenCvVisionDatasource {
 
     return (
       kGenderLabels[genderIdx.clamp(0, kGenderLabels.length - 1)],
-      kAgeLabels[ageIdx.clamp(0, kAgeLabels.length - 1)],
+      kAgeCustomRanges[ageIdx.clamp(0, kAgeCustomRanges.length - 1)],
     );
   }
 
@@ -208,37 +207,25 @@ class OpenCvVisionDatasource {
       resized,
       scalefactor: 1.0,
       size: (kAgeGenderInputSize, kAgeGenderInputSize),
-      mean: cv.Scalar(78.4263, 87.7689, 114.8958),
+      mean: cv.Scalar(
+        kAgeGenderMean[0],
+        kAgeGenderMean[1],
+        kAgeGenderMean[2],
+      ),
       swapRB: false,
     );
     resized.dispose();
     return blob;
   }
 
-  (cv.Mat, bool) _asDetectionGrid(cv.Mat detections) {
-    if (detections.rows > 1 && detections.cols >= 7) {
-      return (detections, false);
-    }
-    final n = detections.size.length > 2 ? detections.size[2] : 0;
-    if (n > 0) {
-      return (detections.reshape(1, n), true);
-    }
-    return (detections, false);
-  }
-
-  double? _detectionValue(cv.Mat detections, int row, int col) {
+  double? _matValue(cv.Mat mat, int row, int col) {
     try {
-      final v = detections.atNum(row, col).toDouble();
+      final v = mat.atNum(row, col).toDouble();
       if (!v.isFinite) return null;
       return v;
     } catch (_) {
       return null;
     }
-  }
-
-  int? _normToPixel(double? norm, int frameSize) {
-    if (norm == null || !norm.isFinite || norm < 0 || norm > 1) return null;
-    return (norm * frameSize).round().clamp(0, frameSize - 1);
   }
 
   int _argmax(cv.Mat preds, int maxClasses) {

@@ -6,8 +6,8 @@ Requires Flutter SDK — add as a dependency to your Flutter app.
 
 ## Features
 
-- Face detection (OpenCV DNN SSD)
-- Age and gender classification (Caffe models)
+- Face detection (YuNet, `FaceDetectorYN`)
+- Age and gender classification (GoogleNet ONNX models)
 - Per-eye state: `open`, `closed`, or `unknown` (Laplacian sharpness heuristic)
 - **Stable `id` per face** within a session (IoU tracking between `analyze` calls)
 - JPEG preview in each result (for UI display)
@@ -24,7 +24,7 @@ Requires Flutter SDK — add as a dependency to your Flutter app.
 
 ### Bundled model files
 
-Six pretrained models ship with the package under `lib/assets/models/` (~94 MB total). On first `start()`, they are loaded from package assets and copied to a temp cache directory so OpenCV can load them from disk. No asset or path configuration is needed in your app.
+Three pretrained ONNX models ship with the package under `lib/assets/models/` (~48 MB total). On first `start()`, they are loaded from package assets and copied to a temp cache directory so OpenCV can load them from disk. No asset or path configuration is needed in your app.
 
 ### Startup time and UI
 
@@ -32,8 +32,8 @@ Six pretrained models ship with the package under `lib/assets/models/` (~94 MB t
 
 | Phase | First launch | Later launches |
 |-------|--------------|----------------|
-| Copy ~94 MB models to cache | 5–30 s (skipped when cache exists) | Skipped |
-| Spawn worker + load 3 DNN nets | 10–60 s depending on device | Same each session |
+| Copy ~48 MB models to cache | 3–20 s (skipped when cache exists) | Skipped |
+| Spawn worker + load 3 DNN models | 10–60 s depending on device | Same each session |
 
 **Always show a loading screen** while `await client.start()` runs. The UI may still feel sluggish on low-RAM devices during DNN load because CPU and memory spike system-wide — this is normal.
 
@@ -53,12 +53,9 @@ Call `start()` once at app launch (not before every frame). Subsequent `analyze(
 
 | File | Role |
 |------|------|
-| `opencv_face_detector_uint8.pb` | Face detection weights |
-| `opencv_face_detector.pbtxt` | Face detection config |
-| `age_net.caffemodel` | Age network |
-| `age_deploy.prototxt` | Age deploy |
-| `gender_net.caffemodel` | Gender network |
-| `gender_deploy.prototxt` | Gender deploy |
+| `face_detection_yunet_2023mar.onnx` | YuNet face detector (~0.2 MB) |
+| `age_googlenet.onnx` | Age classifier, GoogleNet (~24 MB) |
+| `gender_googlenet.onnx` | Gender classifier, GoogleNet (~24 MB) |
 
 Models are declared in the package `pubspec.yaml` and loaded automatically on `start()`.
 
@@ -254,7 +251,7 @@ Export entry: `package:face_vision_service/face_vision_service.dart`
 | `id` | `int` | Stable within tracker session (see below) |
 | `x`, `y`, `width`, `height` | `int` | Bounding box in pixel coordinates |
 | `genderLabel` | `String` | `"M"` or `"F"` when confirmed; `""` before confirmation |
-| `ageLabel` | `String` | e.g. `"(25-32)"` when confirmed; `""` before confirmation |
+| `ageLabel` | `String` | e.g. `"25-35"` when confirmed; `""` before confirmation |
 | `detectionScore` | `double` | Face detector confidence |
 | `leftEyeState`, `rightEyeState` | `String` | `"open"`, `"closed"`, or `"unknown"` |
 
@@ -318,8 +315,8 @@ Inside the worker ([`service_isolate_entry.dart`](lib/src/isolate/service_isolat
 RawImage (BGR bytes)
     → cv.Mat
     → OpenCvVisionDatasource.detectAndClassify()
-         → face SSD detection (optional downscale to max width 320)
-         → per face: age/gender blobs, eye Laplacian heuristic
+         → YuNet face detection (optional downscale to processMaxWidth)
+         → per face: age/gender 224×224 blobs, eye Laplacian/EAR heuristic
     → FaceTracker.assign()  → stable ids
     → optional JPEG encode preview (when includePreviewJpeg is true)
     → FaceAnalysisResult → SendPort
@@ -329,8 +326,9 @@ RawImage (BGR bytes)
 
 | Step | Model / method |
 |------|----------------|
-| Detect faces | TensorFlow SSD (`kFaceDetectWidth` × `kFaceDetectHeight` blob) |
-| Age / gender | Caffe nets on 227×227 face crop |
+| Detect faces | YuNet `FaceDetectorYN` (input size set per frame) |
+| Age / gender | GoogleNet ONNX nets on 224×224 face crop, BGR mean (104, 117, 123) |
+| Age ranges | 8 Adience buckets remapped to custom ranges (`0-10 … 50-70`) via [`vision_constants.dart`](lib/src/vision_constants.dart) `kAgeCustomRanges` |
 | Eyes | [`eye_state_analyzer.dart`](lib/src/datasources/eye_state_analyzer.dart) — ROI above face, Laplacian std-dev vs threshold |
 
 Tunable constants live in [`vision_constants.dart`](lib/src/vision_constants.dart) (confidence threshold, max faces, eye threshold, etc.).

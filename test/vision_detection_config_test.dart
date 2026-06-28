@@ -5,25 +5,25 @@ void main() {
   test('VisionDetectionConfig defaults favor distant face recall', () {
     const config = VisionDetectionConfig();
     expect(config.processMaxWidth, 640);
-    expect(config.faceDetectWidth, 300);
-    expect(config.faceDetectHeight, 300);
-    expect(config.confidenceThreshold, 0.45);
+    expect(config.confidenceThreshold, 0.6);
+    expect(config.nmsThreshold, 0.3);
+    expect(config.topK, 5000);
     expect(config.minFaceBoxPx, 10);
   });
 
   test('VisionDetectionConfig round-trips through map', () {
     const config = VisionDetectionConfig(
       processMaxWidth: 1280,
-      faceDetectWidth: 300,
-      faceDetectHeight: 300,
       confidenceThreshold: 0.35,
+      nmsThreshold: 0.4,
+      topK: 1000,
       minFaceBoxPx: 8,
     );
     final restored = VisionDetectionConfig.fromMap(config.toMap());
     expect(restored.processMaxWidth, 1280);
-    expect(restored.faceDetectWidth, 300);
-    expect(restored.faceDetectHeight, 300);
     expect(restored.confidenceThreshold, 0.35);
+    expect(restored.nmsThreshold, 0.4);
+    expect(restored.topK, 1000);
     expect(restored.minFaceBoxPx, 8);
   });
 

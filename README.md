@@ -315,8 +315,10 @@ Inside the worker ([`service_isolate_entry.dart`](lib/src/isolate/service_isolat
 RawImage (BGR bytes)
     → cv.Mat
     → OpenCvVisionDatasource.detectAndClassify()
-         → YuNet face detection (optional downscale to processMaxWidth)
-         → per face: age/gender 224×224 blobs, eye Laplacian/EAR heuristic
+         → YuNet face detection (optional downscale to processMaxWidth, default 960)
+         → drop faces below minClassifyFacePx / minClassifyFaceArea (original-frame px)
+         → per face: age/gender on a padded square 224×224 crop of the ORIGINAL
+           frame, eye Laplacian/EAR heuristic
     → FaceTracker.assign()  → stable ids
     → optional JPEG encode preview (when includePreviewJpeg is true)
     → FaceAnalysisResult → SendPort
@@ -326,12 +328,13 @@ RawImage (BGR bytes)
 
 | Step | Model / method |
 |------|----------------|
-| Detect faces | YuNet `FaceDetectorYN` (input size set per frame) |
-| Age / gender | GoogleNet ONNX nets on 224×224 face crop, RGB input (BGR frame swapped via `swapRB`), mean (104, 117, 123) in R,G,B order |
+| Detect faces | YuNet `FaceDetectorYN` (input size set per frame); score threshold `0.5`, work frame downscaled to `processMaxWidth` (960) for better small/distant-face recall |
+| Reject tiny faces | Faces below `minClassifyFacePx` (32 px) or `minClassifyFaceArea` (32×32) in **original** frame coordinates are dropped before classification |
+| Age / gender | GoogleNet ONNX nets on a **padded, square** 224×224 crop taken from the **original** (full-resolution) frame via `squareFaceCropRect` (`kAgeGenderCropPadFraction` = 0.4), RGB input (BGR frame swapped via `swapRB`), mean (104, 117, 123) in R,G,B order |
 | Age ranges | 8 Adience buckets remapped to custom ranges (`0-10 … 50-70`) via [`vision_constants.dart`](lib/src/vision_constants.dart) `kAgeCustomRanges` |
 | Eyes | [`eye_state_analyzer.dart`](lib/src/datasources/eye_state_analyzer.dart) — ROI above face, Laplacian std-dev vs threshold |
 
-Tunable constants live in [`vision_constants.dart`](lib/src/vision_constants.dart) (confidence threshold, max faces, eye threshold, etc.).
+Tunable constants live in [`vision_constants.dart`](lib/src/vision_constants.dart) (confidence threshold, processing width, min classify size/area, age/gender crop padding, max faces, eye threshold, etc.). Detection-time values are also overridable per session via [`VisionDetectionConfig`](lib/src/entities/vision_detection_config.dart).
 
 ### Stable face IDs and label locking ([`face_tracker.dart`](lib/src/tracking/face_tracker.dart))
 

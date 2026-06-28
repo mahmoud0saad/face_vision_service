@@ -77,11 +77,31 @@ class OpenCvVisionDatasource {
         final w = (box.w * invScale).round().clamp(1, frame.cols - x1);
         final h = (box.h * invScale).round().clamp(1, frame.rows - y1);
 
+        // Scale-independent rejection in original-frame pixels: drop faces too
+        // small/low-detail to classify reliably. Done before any per-face work.
+        if (w < detectionConfig.minClassifyFacePx ||
+            h < detectionConfig.minClassifyFacePx ||
+            w * h < detectionConfig.minClassifyFaceArea) {
+          continue;
+        }
+
         final lap = _laplacianEyeAnalyzer.analyze(frame, x1, y1, w, h);
         final ear = _earEyeAnalyzer.analyze(frame, x1, y1, w, h);
         final eyes = _eyeCombiner.combinePair(lap, ear);
 
-        final roi = frame.region(cv.Rect(x1, y1, w, h));
+        // Classify from a padded, square crop of the ORIGINAL frame so the
+        // network sees the high-quality pixels with training-like context and
+        // no aspect distortion when resized to its square input.
+        final (cropX, cropY, cropSide) = squareFaceCropRect(
+          x1,
+          y1,
+          w,
+          h,
+          frame.cols,
+          frame.rows,
+          padFraction: kAgeGenderCropPadFraction,
+        );
+        final roi = frame.region(cv.Rect(cropX, cropY, cropSide, cropSide));
         final labels = _classifyAgeGender(ageNet, genderNet, roi);
         roi.dispose();
         classified++;
@@ -201,10 +221,10 @@ class OpenCvVisionDatasource {
   }
 
   cv.Mat _ageGenderBlob(cv.Mat faceRoi) {
-    final resized =
-        cv.resize(faceRoi, (kAgeGenderInputSize, kAgeGenderInputSize));
-    final blob = cv.blobFromImage(
-      resized,
+    // The ROI is already a square crop, so blobFromImage's own resize to the
+    // square network input is the single (distortion-free) resize step.
+    return cv.blobFromImage(
+      faceRoi,
       scalefactor: 1.0,
       size: (kAgeGenderInputSize, kAgeGenderInputSize),
       mean: cv.Scalar(
@@ -217,8 +237,6 @@ class OpenCvVisionDatasource {
       // here are BGR, so swap to RGB; mean is then applied in R,G,B order.
       swapRB: true,
     );
-    resized.dispose();
-    return blob;
   }
 
   double? _matValue(cv.Mat mat, int row, int col) {

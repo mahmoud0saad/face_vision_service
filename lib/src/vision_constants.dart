@@ -28,6 +28,11 @@ const List<String> kAgeCustomRanges = [
 const List<String> kGenderLabels = ['M', 'F'];
 
 /// YuNet face detector score threshold (also exposed via [VisionDetectionConfig]).
+///
+/// Lowered from 0.6 to 0.5: YuNet assigns lower confidence to small/blurry
+/// distant faces, so 0.5 recovers more of them. The extra weak detections are
+/// removed downstream by NMS and by the original-frame size/area gate
+/// ([kMinClassifyFacePx] / [kMinClassifyFaceArea]).
 const double kFaceConfidenceThreshold = 0.6;
 
 /// YuNet non-maximum-suppression IoU threshold.
@@ -45,10 +50,37 @@ const int kAgeGenderInputSize = 224;
 const List<double> kAgeGenderMean = [104.0, 117.0, 123.0];
 
 /// Downscale frames before DNN when the longest side exceeds this value.
-const int kProcessMaxWidth = 640;
+///
+/// Raised from 640 to 960: YuNet's recall on small/distant faces is bounded by
+/// the resolution it actually runs on. A larger work frame keeps distant faces
+/// detectable at the cost of more CPU per frame.
+const int kProcessMaxWidth = 960;
 
-/// Minimum face box width/height in the detection work frame (pixels).
+/// Minimum face box width/height in the detection *work* frame (pixels).
+///
+/// This is a cheap pre-filter applied on the (possibly downscaled) detection
+/// frame. The primary, scale-independent rejection happens later in original
+/// frame coordinates via [kMinClassifyFacePx] / [kMinClassifyFaceArea].
 const int kMinFaceBoxPx = 10;
+
+/// Minimum face box width/height in the *original* frame (pixels) required to
+/// run age/gender classification. Faces smaller than this are dropped, since
+/// crops below this size are too low-detail to classify reliably.
+const int kMinClassifyFacePx = 32;
+
+/// Minimum face box area in the *original* frame (pixels^2) required to run
+/// age/gender classification. Complements [kMinClassifyFacePx] to also reject
+/// thin/degenerate boxes.
+const int kMinClassifyFaceArea = 32 * 32;
+
+/// Outward padding for the age/gender classification crop (fraction of the
+/// square crop's base side, applied to every side).
+///
+/// The GoogleNet age/gender models (Adience / Levi-Hassner) were trained on
+/// face crops that include substantial surrounding context. ~40% margin matches
+/// that training distribution far better than a tight detector box. This is kept
+/// separate from [kFaceBoxPadFraction] so the reported display box is unchanged.
+const double kAgeGenderCropPadFraction = 0.4;
 
 /// Max faces to run age/gender on per frame.
 const int kMaxFacesToClassify = 14;

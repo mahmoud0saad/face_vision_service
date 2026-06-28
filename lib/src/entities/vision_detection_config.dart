@@ -8,6 +8,8 @@ class VisionDetectionConfig {
     this.nmsThreshold = kYuNetNmsThreshold,
     this.topK = kYuNetTopK,
     this.minFaceBoxPx = kMinFaceBoxPx,
+    this.minClassifyFacePx = kMinClassifyFacePx,
+    this.minClassifyFaceArea = kMinClassifyFaceArea,
   });
 
   /// Downscale frames so the longest side is at most this many pixels before
@@ -26,12 +28,22 @@ class VisionDetectionConfig {
   /// Minimum face box width/height in the detection work frame (pixels).
   final int minFaceBoxPx;
 
+  /// Minimum face box width/height in the original frame (pixels) required to
+  /// run age/gender classification. Smaller faces are dropped.
+  final int minClassifyFacePx;
+
+  /// Minimum face box area in the original frame (pixels^2) required to run
+  /// age/gender classification. Smaller faces are dropped.
+  final int minClassifyFaceArea;
+
   Map<String, Object?> toMap() => {
         'processMaxWidth': processMaxWidth,
         'confidenceThreshold': confidenceThreshold,
         'nmsThreshold': nmsThreshold,
         'topK': topK,
         'minFaceBoxPx': minFaceBoxPx,
+        'minClassifyFacePx': minClassifyFacePx,
+        'minClassifyFaceArea': minClassifyFaceArea,
       };
 
   factory VisionDetectionConfig.fromMap(Map<Object?, Object?> map) {
@@ -43,6 +55,10 @@ class VisionDetectionConfig {
           (map['nmsThreshold'] as num?)?.toDouble() ?? kYuNetNmsThreshold,
       topK: map['topK'] as int? ?? kYuNetTopK,
       minFaceBoxPx: map['minFaceBoxPx'] as int? ?? kMinFaceBoxPx,
+      minClassifyFacePx:
+          map['minClassifyFacePx'] as int? ?? kMinClassifyFacePx,
+      minClassifyFaceArea:
+          map['minClassifyFaceArea'] as int? ?? kMinClassifyFaceArea,
     );
   }
 }

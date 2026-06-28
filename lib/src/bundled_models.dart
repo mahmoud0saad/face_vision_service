@@ -17,12 +17,9 @@ class BundledModels {
   static const _assetDir = 'lib/assets/models';
 
   static const bundledAssetNames = [
-    'opencv_face_detector.pbtxt',
-    'opencv_face_detector_uint8.pb',
-    'age_deploy.prototxt',
-    'age_net.caffemodel',
-    'gender_deploy.prototxt',
-    'gender_net.caffemodel',
+    'face_detection_yunet_2023mar.onnx',
+    'age_googlenet.onnx',
+    'gender_googlenet.onnx',
   ];
 
   /// Reads a bundled model file from the package Flutter assets.
@@ -115,12 +112,9 @@ class BundledModels {
   }
 
   static ModelPaths _pathsForDir(String dirPath) => ModelPaths(
-        faceModel: '$dirPath/opencv_face_detector_uint8.pb',
-        faceProto: '$dirPath/opencv_face_detector.pbtxt',
-        ageModel: '$dirPath/age_net.caffemodel',
-        ageProto: '$dirPath/age_deploy.prototxt',
-        genderModel: '$dirPath/gender_net.caffemodel',
-        genderProto: '$dirPath/gender_deploy.prototxt',
+        faceModel: '$dirPath/face_detection_yunet_2023mar.onnx',
+        ageModel: '$dirPath/age_googlenet.onnx',
+        genderModel: '$dirPath/gender_googlenet.onnx',
       );
 
   static Future<Uint8List> _readFromPackageUri(String relativePath) async {

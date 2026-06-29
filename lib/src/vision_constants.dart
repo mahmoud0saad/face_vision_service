@@ -104,7 +104,7 @@ const int kEarBlurKernel = 3;
 const double kEarEdgeQuantile = 0.75;
 
 /// Consecutive agreeing analyze results required to lock gender/age for a track.
-const int kLabelConfirmFrames =3;
+const int kLabelConfirmFrames =5;
 
 /// Default pause between internal confirmation checks in [FaceVisionLiveSession].
 const double kDefaultConfirmSamplingIntervalSeconds = 0.1;

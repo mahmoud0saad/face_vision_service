@@ -31,6 +31,8 @@ class FaceVisionLiveSession {
   Timer? _emitTimer;
   bool _running = false;
   bool _starting = false;
+  bool _stopping = false;
+  Future<void>? _teardown;
   int _lifecycleGeneration = 0;
   bool _isAnalyzing = false;
   bool _includePreviewJpeg = false;
@@ -58,8 +60,9 @@ class FaceVisionLiveSession {
   /// True while [start] is in progress (camera / vision service not ready yet).
   bool get isStarting => _starting;
 
-  /// True while [start] is in progress or the capture loop is active.
-  bool get isActive => _running || _starting;
+  /// True while [start] is in progress, the capture loop is active, or a
+  /// previous session is still tearing down (camera / worker isolate release).
+  bool get isActive => _running || _starting || _stopping;
 
   /// Starts the vision service (if needed), opens the camera, begins internal
   /// confirmation sampling, and emits confirmed results every [intervalSeconds].
@@ -72,6 +75,14 @@ class FaceVisionLiveSession {
     VisionDetectionConfig? detectionConfig,
     StartupProgressCallback? onStartupProgress,
   }) async {
+    // Wait for any in-flight teardown to fully release the camera and worker
+    // isolate before acquiring them again. This prevents a quick stop -> start
+    // from overlapping the previous session's shutdown.
+    final pendingTeardown = _teardown;
+    if (pendingTeardown != null) {
+      await pendingTeardown;
+    }
+
     if (_running) {
       throw StateError('Session already running. Call stop() first.');
     }
@@ -120,10 +131,11 @@ class FaceVisionLiveSession {
       _emitTimer = Timer.periodic(emitInterval, (_) => _emitToUser());
       unawaited(_internalSamplingLoop());
     } finally {
-      if (generation == _lifecycleGeneration) {
-        _starting = false;
-      }
-      if (_isCancelled(generation) && !_running) {
+      final cancelled = _isCancelled(generation);
+      // Always clear _starting so a waiting stop() can observe completion,
+      // even when this start was cancelled (generation advanced).
+      _starting = false;
+      if (cancelled && !_running) {
         await _abortStart();
       }
     }
@@ -134,25 +146,36 @@ class FaceVisionLiveSession {
   /// Also cancels an in-flight [start] so callers can shut down before the
   /// session becomes [isRunning].
   Future<void> stop() async {
+    // A teardown is already running (from a previous stop or an aborted start);
+    // just await the same future so callers don't start a second teardown.
+    if (_stopping) {
+      await _teardown;
+      return;
+    }
     if (!_running && !_starting) return;
 
+    // Signal cancellation to any in-flight start().
     _lifecycleGeneration++;
 
-    if (_starting) {
-      while (_starting) {
-        await Future<void>.delayed(Duration.zero);
-      }
-      if (!_running) return;
+    // Wait for an in-flight start() to observe cancellation and finish.
+    while (_starting) {
+      await Future<void>.delayed(Duration.zero);
     }
 
-    _running = false;
-    _emitTimer?.cancel();
-    _emitTimer = null;
+    // A cancelled start() runs its own teardown via _abortStart(); await it
+    // instead of starting a second one.
+    final abortTeardown = _teardown;
+    if (abortTeardown != null) {
+      await abortTeardown;
+      return;
+    }
 
-    await _camera.close();
-    await _controller?.close();
-    _controller = null;
-    _cachedResult = null;
+    // Nothing left to tear down (start was cancelled before opening anything).
+    if (!_running) return;
+
+    final teardown = _teardownInternal();
+    _teardown = teardown;
+    await teardown;
   }
 
   /// [stop] plus disposes the vision client when this session created it.
@@ -231,18 +254,35 @@ class FaceVisionLiveSession {
 
   bool _isCancelled(int generation) => generation != _lifecycleGeneration;
 
-  Future<void> _abortStart() async {
-    _running = false;
-    _emitTimer?.cancel();
-    _emitTimer = null;
+  Future<void> _abortStart() {
+    final teardown = _teardownInternal();
+    _teardown = teardown;
+    return teardown;
+  }
 
+  /// Releases the camera (worker isolate) and results stream.
+  ///
+  /// Marks the session as [_stopping] for its full duration so that
+  /// [isActive] stays true and a concurrent [start] awaits completion before
+  /// re-acquiring the camera. Stored in [_teardown] by callers.
+  Future<void> _teardownInternal() async {
+    _stopping = true;
     try {
-      await _camera.close();
-    } catch (_) {}
+      _running = false;
+      _emitTimer?.cancel();
+      _emitTimer = null;
 
-    await _controller?.close();
-    _controller = null;
-    _cachedResult = null;
+      try {
+        await _camera.close();
+      } catch (_) {}
+
+      await _controller?.close();
+      _controller = null;
+      _cachedResult = null;
+    } finally {
+      _stopping = false;
+      _teardown = null;
+    }
   }
 }
 

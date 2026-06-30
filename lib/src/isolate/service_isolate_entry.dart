@@ -16,7 +16,7 @@ void serviceIsolateEntry(SendPort mainSendPort) {
   mainSendPort.send(workerPort.sendPort);
 
   final vision = OpenCvVisionDatasource();
-  final tracker = FaceTracker(maxMissedFrames: 500);
+  final tracker = FaceTracker(maxMissedFrames: 20);
 
   workerPort.listen((Object? message) async {
     if (message is! Map<Object?, Object?>) return;

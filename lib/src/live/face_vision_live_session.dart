@@ -3,6 +3,7 @@ import 'dart:async';
 import '../bundled_models.dart';
 import '../entities/detected_face.dart';
 import '../entities/face_analysis_result.dart';
+import '../entities/preview_frame.dart';
 import '../entities/raw_image.dart';
 import '../entities/vision_detection_config.dart';
 import '../isolate/service_client.dart';
@@ -13,6 +14,11 @@ import '../vision_constants.dart';
 ///
 /// Runs internal confirmation sampling between user-facing emissions.
 /// Only faces with confirmed gender and age appear on [results].
+///
+/// Optionally taps the internally grabbed frames onto [previewFrames] for a
+/// live camera preview. This preview feature is opt-in (see [start]'s
+/// `enablePreview` and [setPreviewEnabled]) and does not change how or when
+/// [results] are emitted.
 class FaceVisionLiveSession {
   FaceVisionLiveSession({
     FaceVisionServiceClient? client,
@@ -28,6 +34,7 @@ class FaceVisionLiveSession {
   final bool _ownsClient;
 
   StreamController<FaceAnalysisResult>? _controller;
+  StreamController<PreviewFrame>? _previewController;
   Timer? _emitTimer;
   bool _running = false;
   bool _starting = false;
@@ -36,6 +43,7 @@ class FaceVisionLiveSession {
   int _lifecycleGeneration = 0;
   bool _isAnalyzing = false;
   bool _includePreviewJpeg = false;
+  bool _previewEnabled = false;
   double _confirmSamplingIntervalSeconds =
       kDefaultConfirmSamplingIntervalSeconds;
   FaceAnalysisResult? _cachedResult;
@@ -43,12 +51,36 @@ class FaceVisionLiveSession {
   /// The vision service client used for analysis.
   FaceVisionServiceClient get client => _client;
 
+  /// Whether raw preview frames are currently emitted on [previewFrames].
+  ///
+  /// Toggle at runtime with [setPreviewEnabled]. This is an additive feature
+  /// and does not affect the [results] analysis stream.
+  bool get previewEnabled => _previewEnabled;
+
+  /// Enables or disables the live preview feature at runtime.
+  ///
+  /// When disabled, the capture loop keeps running for analysis but skips
+  /// copying/emitting raw frames on [previewFrames].
+  void setPreviewEnabled(bool enabled) {
+    _previewEnabled = enabled;
+  }
+
   /// Emits one [FaceAnalysisResult] per emission interval with confirmed faces only.
   ///
   /// Empty camera frames are skipped during internal sampling. Analysis errors
   /// are forwarded via [Stream.addError].
   Stream<FaceAnalysisResult> get results {
     final controller = _controller;
+    if (controller == null) {
+      throw StateError('Session not started. Call start() first.');
+    }
+    return controller.stream;
+  }
+
+  /// Emits every internally grabbed raw BGR frame for a live preview, when the
+  /// preview feature is enabled. Independent of the [results] analysis path.
+  Stream<PreviewFrame> get previewFrames {
+    final controller = _previewController;
     if (controller == null) {
       throw StateError('Session not started. Call start() first.');
     }
@@ -66,11 +98,16 @@ class FaceVisionLiveSession {
 
   /// Starts the vision service (if needed), opens the camera, begins internal
   /// confirmation sampling, and emits confirmed results every [intervalSeconds].
+  ///
+  /// Set [enablePreview] to true to also emit raw frames on [previewFrames] for
+  /// a live preview; it can be toggled later with [setPreviewEnabled]. The
+  /// preview is opt-in (default false) and does not change [results] behavior.
   Future<void> start({
     required double intervalSeconds,
     double confirmSamplingIntervalSeconds =
         kDefaultConfirmSamplingIntervalSeconds,
     int deviceIndex = 0,
+    bool enablePreview = false,
     bool includePreviewJpeg = false,
     VisionDetectionConfig? detectionConfig,
     StartupProgressCallback? onStartupProgress,
@@ -108,9 +145,11 @@ class FaceVisionLiveSession {
     _starting = true;
 
     _includePreviewJpeg = includePreviewJpeg;
+    _previewEnabled = enablePreview;
     _confirmSamplingIntervalSeconds = confirmSamplingIntervalSeconds;
     _cachedResult = null;
     _controller = StreamController<FaceAnalysisResult>.broadcast();
+    _previewController = StreamController<PreviewFrame>.broadcast();
 
     try {
       if (!_client.isRunning) {
@@ -208,6 +247,19 @@ class FaceVisionLiveSession {
       final frame = await _camera.readFrame();
       if (!_running || frame == null) return;
 
+      if (_previewEnabled) {
+        final preview = _previewController;
+        if (preview != null && !preview.isClosed) {
+          preview.add(
+            PreviewFrame(
+              bgrBytes: frame.bgrBytes,
+              width: frame.width,
+              height: frame.height,
+            ),
+          );
+        }
+      }
+
       final result = await _client.analyze(
         RawImage(
           bgrBytes: frame.bgrBytes,
@@ -278,6 +330,8 @@ class FaceVisionLiveSession {
 
       await _controller?.close();
       _controller = null;
+      await _previewController?.close();
+      _previewController = null;
       _cachedResult = null;
     } finally {
       _stopping = false;
@@ -285,4 +339,3 @@ class FaceVisionLiveSession {
     }
   }
 }
-

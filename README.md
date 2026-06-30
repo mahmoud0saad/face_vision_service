@@ -178,11 +178,56 @@ Future<void> runLive() async {
 }
 ```
 
+## Live preview widget (Flutter, optional feature)
+
+This is an **opt-in, additive feature** that does not change the `results`
+analysis behavior described above. When enabled, the session also taps each
+internally grabbed raw BGR frame onto `session.previewFrames` for a live feed.
+The package ships a drop-in widget, [`FaceVisionLivePreview`](lib/src/widgets/face_vision_live_preview.dart),
+that renders this feed and draws the detected face boxes/labels on top:
+
+```dart
+import 'package:flutter/material.dart';
+import 'package:face_vision_service/face_vision_service.dart';
+
+// Start the session with the preview feature enabled.
+await session.start(intervalSeconds: 0.5, enablePreview: true);
+
+Widget build(BuildContext context) {
+  return FaceVisionLivePreview(
+    session: session,
+    showLabels: true,            // draw "#id Gender Age" above each box
+    boxColor: Colors.greenAccent,
+    fit: BoxFit.contain,         // or BoxFit.cover / BoxFit.fill
+    // labelBuilder: (face) => '#${face.id} ${face.genderLabel}',
+  );
+}
+```
+
+The widget subscribes to `previewFrames` + `results` itself, decodes frames to
+images on the fly (dropping frames while a decode is in flight), and
+re-subscribes automatically across `start()`/`stop()` cycles.
+
+### Enabling / disabling the preview
+
+The preview feed is **off by default**. Enable it at `start()` or toggle it at
+runtime:
+
+```dart
+await session.start(intervalSeconds: 0.5, enablePreview: true); // on at start
+session.setPreviewEnabled(false);          // turn it on/off at runtime
+final on = session.previewEnabled;         // current state
+```
+
+When disabled, `results` (face analysis) keeps flowing unchanged; only
+`previewFrames` emission is paused.
+
 | Parameter | Description |
 |-----------|-------------|
 | `intervalSeconds` | How often **confirmed** results are emitted on `results` (minimum `0.5`) |
 | `confirmSamplingIntervalSeconds` | Extra pause after each internal analyze completes (default `0.1`, minimum `0.0` for max throughput) |
 | `deviceIndex` | Camera device index (default `0`) |
+| `enablePreview` | Opt-in live preview (default `false`); when `true`, emits raw frames on `previewFrames`; can be toggled later via `setPreviewEnabled()` |
 | `includePreviewJpeg` | When `false` (default for live), skips JPEG encoding in results |
 | `onStartupProgress` | Same as `FaceVisionServiceClient.start()` |
 

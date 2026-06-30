@@ -295,10 +295,12 @@ Export entry: `package:face_vision_service/face_vision_service.dart`
 |-------|------|-------------|
 | `id` | `int` | Stable within tracker session (see below) |
 | `x`, `y`, `width`, `height` | `int` | Bounding box in pixel coordinates |
-| `genderLabel` | `String` | `"M"` or `"F"` when confirmed; `""` before confirmation |
+| `genderLabel` | `String` | `"M"` or `"F"` (smoothed across frames), or `""` when gender inference was skipped (e.g. face below `minGenderFacePx`) |
 | `ageLabel` | `String` | e.g. `"25-35"` when confirmed; `""` before confirmation |
 | `detectionScore` | `double` | Face detector confidence |
 | `leftEyeState`, `rightEyeState` | `String` | `"open"`, `"closed"`, or `"unknown"` |
+| `maleProbability` | `double` | Smoothed `P(male)` in `[0,1]`; `0` when gender inference was skipped |
+| `genderConfidence` | `double` | Confidence of `genderLabel` (`max(p, 1-p)`); `0` when skipped |
 
 ### `FaceTracker` (exported, optional)
 
@@ -362,9 +364,11 @@ RawImage (BGR bytes)
     → OpenCvVisionDatasource.detectAndClassify()
          → YuNet face detection (optional downscale to processMaxWidth, default 960)
          → drop faces below minClassifyFacePx / minClassifyFaceArea (original-frame px)
-         → per face: age/gender on a padded square 224×224 crop of the ORIGINAL
-           frame, eye Laplacian/EAR heuristic
-    → FaceTracker.assign()  → stable ids
+         → per face: age on a padded square 224×224 crop of the ORIGINAL frame,
+           gender on a dedicated crop (configurable margin → optional eye-landmark
+           alignment → lighting preprocessing) with a softmax confidence,
+           eye Laplacian/EAR heuristic
+    → FaceTracker.assign()  → stable ids + per-track gender probability smoothing
     → optional JPEG encode preview (when includePreviewJpeg is true)
     → FaceAnalysisResult → SendPort
 ```
@@ -375,7 +379,8 @@ RawImage (BGR bytes)
 |------|----------------|
 | Detect faces | YuNet `FaceDetectorYN` (input size set per frame); score threshold `0.5`, work frame downscaled to `processMaxWidth` (960) for better small/distant-face recall |
 | Reject tiny faces | Faces below `minClassifyFacePx` (32 px) or `minClassifyFaceArea` (32×32) in **original** frame coordinates are dropped before classification |
-| Age / gender | GoogleNet ONNX nets on a **padded, square** 224×224 crop taken from the **original** (full-resolution) frame via `squareFaceCropRect` (`kAgeGenderCropPadFraction` = 0.4), RGB input (BGR frame swapped via `swapRB`), mean (104, 117, 123) in R,G,B order |
+| Age | GoogleNet ONNX net on a **padded, square** 224×224 crop taken from the **original** (full-resolution) frame via `squareFaceCropRect` (`kAgeGenderCropPadFraction` = 0.4), RGB input (BGR frame swapped via `swapRB`), mean (104, 117, 123) in R,G,B order |
+| Gender | Same GoogleNet net, but on a **dedicated** crop driven by [`GenderPipelineConfig`](lib/src/entities/gender_pipeline_config.dart): configurable margin → optional eye-landmark alignment → lighting preprocessing (gamma / CLAHE / auto-contrast). Skipped below `minGenderFacePx` (80). Softmax `P(male)` is smoothed across frames into a concrete `M`/`F`; the smoothed confidence is exposed on the face as advisory metadata. See [Gender classification accuracy pipeline](#gender-classification-accuracy-pipeline) |
 | Age ranges | 8 Adience buckets remapped to custom ranges (`0-10 … 50-70`) via [`vision_constants.dart`](lib/src/vision_constants.dart) `kAgeCustomRanges` |
 | Eyes | [`eye_state_analyzer.dart`](lib/src/datasources/eye_state_analyzer.dart) — ROI above face, Laplacian std-dev vs threshold |
 
@@ -392,11 +397,90 @@ Tracker state lives **only in the worker isolate** for the lifetime of `start()`
 5. Tracks missed for 15 consecutive analyzes are dropped (default `maxMissedFrames`).
 6. `resetTracker()` clears all tracks; next IDs start at 1.
 
-**Gender and age** lock independently after `kLabelConfirmFrames` (default `3`) consecutive agreeing analyze results for the same track. Until locked, `genderLabel` and `ageLabel` are `""` (never raw flipping values). After lock, labels stay fixed for that ID until `resetTracker()`.
+**Age** locks after `kLabelConfirmFrames` consecutive agreeing analyze results for the same track. Until locked, `ageLabel` is `""`; after lock it stays fixed for that ID until `resetTracker()`.
+
+**Gender** is *not* hard-locked. Instead, each track keeps a short ring buffer (`smoothingWindow`, default `7`) of the model's per-frame `P(male)` and reports the averaged result (always a concrete `M`/`F`) every analyze, so the displayed value adapts but does not flicker. The averaged confidence (`max(p, 1-p)`) is surfaced on the face as `genderConfidence` for optional downstream filtering. The history lives on the track, so it is discarded automatically when the face disappears (after `maxMissedFrames`) — a re-appearing face starts a fresh history. See [Gender classification accuracy pipeline](#gender-classification-accuracy-pipeline).
 
 Eye states (`leftEyeState`, `rightEyeState`) update every analyze.
 
 Same person in a similar position across two `analyze` calls → same `id`. IDs are **not** persisted across `dispose()` or app restarts.
+
+### Gender classification accuracy pipeline
+
+The gender path is enhanced **without retraining or replacing the model**. Every enhancement targets either *input quality* (so the network sees crops closer to its training distribution) or *output stability* (so a single noisy frame cannot flip the label). All knobs live in a single object, [`GenderPipelineConfig`](lib/src/entities/gender_pipeline_config.dart), nested in [`VisionDetectionConfig`](lib/src/entities/vision_detection_config.dart) as `.gender`, and each is independently toggleable for A/B testing.
+
+```mermaid
+flowchart TD
+    Detect["YuNet detect (box + 5 landmarks)"] --> Gate{"w/h >= minGenderFacePx?"}
+    Gate -->|no| Skip["genderLabel = '' (inference skipped)"]
+    Gate -->|yes| Crop["square crop, faceMarginFraction margin"]
+    Crop --> Align{"alignmentEnabled & eyes valid?"}
+    Align -->|yes| Warp["deskew via eye landmarks (warpAffine)"]
+    Align -->|no| Pre
+    Warp --> Pre["preprocess: gamma -> CLAHE -> autoContrast"]
+    Pre --> Infer["genderNet.forward() -> softmax P(male)"]
+    Infer --> Smooth["per-track ring buffer (smoothingWindow) -> avg"]
+    Smooth --> Label["M / F (avg >= 0.5 ? M : F)"]
+    Label --> Conf["genderConfidence = max(avg, 1-avg) as metadata"]
+```
+
+#### Why each enhancement
+
+| Enhancement | Config field(s) | Reasoning |
+|-------------|-----------------|-----------|
+| **Configurable face margin** | `faceMarginFraction` (0.2) | The Adience/Levi-Hassner gender model was trained on face crops with surrounding context. A tight detector box omits hair/jaw cues; expanding 15–25% per side (clamped to frame bounds) restores them. Kept separate from the age crop so age behavior is unchanged. |
+| **Lighting preprocessing** | `preprocessEnabled`, `gammaEnabled`, `gamma`, `gammaDarkThreshold`, `claheEnabled`, `claheClipLimit`, `claheTileGrid`, `autoContrastEnabled` | Difficult lighting is a top cause of misclassification. Gamma (applied only when crop mean-luma < `gammaDarkThreshold`) brightens under-exposed faces; CLAHE on the luma channel restores local contrast without blowing out highlights; optional auto-contrast stretches the dynamic range. Applied **only to the small crop** to stay cheap. |
+| **Optional alignment** | `alignmentEnabled` | YuNet already emits 5 landmarks; using the two eyes to deskew in-plane roll matches the upright training faces. Modular and off by default (a no-op when landmarks are missing or roll is negligible). |
+| **Temporal smoothing** | `smoothingWindow` (7) | A single frame can be noisy. Averaging `P(male)` over the last N frames per tracked face (probability averaging is preferred over majority voting because it preserves confidence) yields a stable label. History is per-track and discarded on disappearance. |
+| **Confidence threshold** | `confidenceThreshold` (0.65) | Advisory only: the pipeline always emits a concrete `M`/`F`, and the smoothed confidence is surfaced as `genderConfidence` so consumers can apply their own low-confidence filtering if desired. |
+| **Minimum face size** | `minGenderFacePx` (80) | Crops below ~80 px lack the detail for reliable gender; below this, gender inference is skipped entirely (the face still gets age/eye-state). |
+
+#### Configuration example
+
+```dart
+const config = VisionDetectionConfig(
+  gender: GenderPipelineConfig(
+    faceMarginFraction: 0.2,
+    preprocessEnabled: true,
+    gammaEnabled: true,
+    gamma: 1.2,
+    claheEnabled: true,
+    claheClipLimit: 2.0,
+    claheTileGrid: 8,
+    autoContrastEnabled: false,
+    confidenceThreshold: 0.65,
+    minGenderFacePx: 80,
+    smoothingWindow: 7,
+    alignmentEnabled: false,
+  ),
+);
+await client.start(detectionConfig: config);
+```
+
+For A/B testing, flip a single flag (e.g. `claheEnabled: false`) and compare; each stage is isolated so differences are attributable.
+
+#### Performance and measured impact
+
+Preprocessing runs on the 224×224 crop only, the gamma LUT and CLAHE instance are cached/reused across frames, and intermediate `Mat`s are disposed eagerly, so steady-state allocation is bounded. Per-step latency is measured by [`test/gender_preprocess_benchmark_test.dart`](test/gender_preprocess_benchmark_test.dart) (tagged `opencv`; it runs where the OpenCV native library is available and skips otherwise). Run and record results with:
+
+```bash
+flutter test test/gender_preprocess_benchmark_test.dart
+```
+
+Record observed numbers here for your target device:
+
+| Step | Added latency (ms / face) | Notes |
+|------|---------------------------|-------|
+| Gamma (LUT) | _TBD_ | only when crop is dark |
+| CLAHE | _TBD_ | luma channel only |
+| Auto-contrast | _TBD_ | off by default |
+| Alignment | _TBD_ | off by default |
+
+| Configuration | Gender accuracy | Notes |
+|---------------|-----------------|-------|
+| Baseline (preprocessing off, no smoothing) | _TBD_ | reference |
+| + margin + CLAHE + gamma | _TBD_ | input-quality only |
+| + smoothing + confidence threshold | _TBD_ | full pipeline |
 
 ### Package layout
 
@@ -414,9 +498,14 @@ face_vision_service/
         │   ├── model_paths.dart
         │   ├── raw_image.dart
         │   ├── detected_face.dart
+        │   ├── gender_pipeline_config.dart   # single gender-accuracy config object
+        │   ├── vision_detection_config.dart
         │   └── face_analysis_result.dart
         ├── datasources/
         │   ├── opencv_vision_datasource.dart
+        │   ├── face_preprocessor.dart        # gamma / CLAHE / auto-contrast
+        │   ├── face_aligner.dart             # optional eye-landmark alignment
+        │   ├── face_box_geometry.dart        # margin / square crop helpers
         │   └── eye_state_analyzer.dart
         ├── tracking/
         │   └── face_tracker.dart

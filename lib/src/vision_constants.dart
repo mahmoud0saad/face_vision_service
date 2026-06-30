@@ -106,6 +106,62 @@ const double kEarEdgeQuantile = 0.75;
 /// Consecutive agreeing analyze results required to lock gender/age for a track.
 const int kLabelConfirmFrames =1;
 
+// ---------------------------------------------------------------------------
+// Gender pipeline enhancement defaults ([GenderPipelineConfig]).
+//
+// These tune the dedicated gender classification path (crop margin, lighting
+// preprocessing, optional alignment, confidence gating and temporal smoothing)
+// without touching the age, eye-state or detection paths.
+// ---------------------------------------------------------------------------
+
+/// Per-side outward expansion of the detected box used for the gender crop,
+/// as a fraction of the box size. Requirement target is 15-25%; 20% balances
+/// added facial context against background noise.
+const double kGenderFaceMarginFraction = 0.2;
+
+/// Master switch for gender crop lighting preprocessing.
+const bool kGenderPreprocessEnabled = true;
+
+/// Enable gamma correction for dark crops.
+const bool kGenderGammaEnabled = true;
+
+/// Gamma exponent applied to dark crops (>1 brightens mid-tones).
+const double kGenderGamma = 1.2;
+
+/// Mean luma (0-255) at or above which gamma correction is skipped. Crops
+/// brighter than this are already well exposed.
+const double kGenderGammaDarkThreshold = 90.0;
+
+/// Enable CLAHE (Contrast Limited Adaptive Histogram Equalization) on the
+/// luma channel of the gender crop.
+const bool kGenderClaheEnabled = true;
+
+/// CLAHE contrast clip limit. Low values (~2) avoid amplifying noise.
+const double kGenderClaheClipLimit = 2.0;
+
+/// CLAHE square tile grid size (NxN) over the crop.
+const int kGenderClaheTileGrid = 8;
+
+/// Enable automatic brightness/contrast normalization via convertScaleAbs.
+/// Off by default to avoid double-correcting alongside CLAHE.
+const bool kGenderAutoContrastEnabled = false;
+
+/// Advisory minimum confidence for a "strong" gender prediction. The pipeline
+/// always emits a concrete M/F label; this value is surfaced on the face (as
+/// [DetectedFace.genderConfidence]) so downstream consumers can apply their own
+/// low-confidence filtering if desired.
+const double kGenderConfidenceThreshold = 0.65;
+
+/// Minimum face box width/height (original-frame pixels) required to run gender
+/// inference. Smaller faces still get age/eye-state but no gender.
+const int kMinGenderFacePx = 80;
+
+/// Number of recent per-frame gender probabilities averaged per tracked face.
+const int kGenderSmoothingWindow = 7;
+
+/// Enable optional eye-landmark face alignment before gender inference.
+const bool kGenderAlignmentEnabled = false;
+
 /// Default pause between internal confirmation checks in [FaceVisionLiveSession].
 const double kDefaultConfirmSamplingIntervalSeconds = 0.1;
 

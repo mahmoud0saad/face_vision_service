@@ -16,7 +16,9 @@ void serviceIsolateEntry(SendPort mainSendPort) {
   mainSendPort.send(workerPort.sendPort);
 
   final vision = OpenCvVisionDatasource();
-  final tracker = FaceTracker(maxMissedFrames: 20);
+  // Constructed with defaults; rebuilt on 'init' once the detection config
+  // (including gender smoothing/confidence settings) is known.
+  var tracker = FaceTracker(maxMissedFrames: 20);
 
   workerPort.listen((Object? message) async {
     if (message is! Map<Object?, Object?>) return;
@@ -28,8 +30,12 @@ void serviceIsolateEntry(SendPort mainSendPort) {
           final detectionConfigRaw =
               message['detectionConfig'] as Map<Object?, Object?>?;
           if (detectionConfigRaw != null) {
-            vision.detectionConfig =
-                VisionDetectionConfig.fromMap(detectionConfigRaw);
+            final cfg = VisionDetectionConfig.fromMap(detectionConfigRaw);
+            vision.detectionConfig = cfg;
+            tracker = FaceTracker(
+              maxMissedFrames: 20,
+              smoothingWindow: cfg.gender.smoothingWindow,
+            );
           }
           final paths = await _resolveModelPaths(message, mainSendPort);
           mainSendPort.send({

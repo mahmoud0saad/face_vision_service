@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 
 import '../entities/detected_face.dart';
@@ -7,7 +9,9 @@ import '../vision_constants.dart';
 import 'ear_eye_state_analyzer.dart';
 import 'eye_state_analyzer.dart';
 import 'eye_state_combiner.dart';
+import 'face_aligner.dart';
 import 'face_box_geometry.dart';
+import 'face_preprocessor.dart';
 
 class OpenCvVisionDatasource {
   OpenCvVisionDatasource({VisionDetectionConfig? detectionConfig})
@@ -23,6 +27,13 @@ class OpenCvVisionDatasource {
   final EyeStateAnalyzer _laplacianEyeAnalyzer = EyeStateAnalyzer();
   final EarEyeStateAnalyzer _earEyeAnalyzer = EarEyeStateAnalyzer();
   final EyeStateCombiner _eyeCombiner = EyeStateCombiner();
+  final FacePreprocessor _preprocessor = FacePreprocessor();
+  final FaceAligner _aligner = FaceAligner();
+
+  /// Releases cached preprocessing resources (LUT/CLAHE).
+  void dispose() {
+    _preprocessor.dispose();
+  }
 
   Future<void> loadModels(ModelPaths paths) async {
     if (_loaded) return;
@@ -89,10 +100,10 @@ class OpenCvVisionDatasource {
         final ear = _earEyeAnalyzer.analyze(frame, x1, y1, w, h);
         final eyes = _eyeCombiner.combinePair(lap, ear);
 
-        // Classify from a padded, square crop of the ORIGINAL frame so the
-        // network sees the high-quality pixels with training-like context and
-        // no aspect distortion when resized to its square input.
-        final (cropX, cropY, cropSide) = squareFaceCropRect(
+        // Age: padded square crop of the ORIGINAL frame so the network sees
+        // high-quality pixels with training-like context and no aspect
+        // distortion when resized to its square input. Behavior unchanged.
+        final (ageX, ageY, ageSide) = squareFaceCropRect(
           x1,
           y1,
           w,
@@ -101,9 +112,24 @@ class OpenCvVisionDatasource {
           frame.rows,
           padFraction: kAgeGenderCropPadFraction,
         );
-        final roi = frame.region(cv.Rect(cropX, cropY, cropSide, cropSide));
-        final labels = _classifyAgeGender(ageNet, genderNet, roi);
-        roi.dispose();
+        final ageRoi =
+            frame.region(cv.Rect(ageX, ageY, ageSide, ageSide));
+        final ageLabel = _classifyAge(ageNet, ageRoi);
+        ageRoi.dispose();
+
+        // Gender: dedicated, configurable pipeline (margin -> optional
+        // alignment -> lighting preprocessing -> inference). Skipped for
+        // faces below the configurable minimum size.
+        final genderResult = _classifyGenderForBox(
+          genderNet: genderNet,
+          frame: frame,
+          x1: x1,
+          y1: y1,
+          w: w,
+          h: h,
+          box: box,
+          invScale: invScale,
+        );
         classified++;
 
         final (ex, ey, ew, eh) = expandFaceBox(
@@ -123,11 +149,13 @@ class OpenCvVisionDatasource {
             y: ey,
             width: ew,
             height: eh,
-            genderLabel: labels.$1,
-            ageLabel: labels.$2,
+            genderLabel: genderResult.$1,
+            ageLabel: ageLabel,
             detectionScore: box.score,
             leftEyeState: eyes.$1,
             rightEyeState: eyes.$2,
+            maleProbability: genderResult.$2,
+            genderConfidence: genderResult.$3,
           ),
         );
       }
@@ -187,7 +215,21 @@ class OpenCvVisionDatasource {
         final minBox = detectionConfig.minFaceBoxPx;
         if (w < minBox || h < minBox) continue;
 
-        found.add(_FaceBoxScratch(x1: x1, y1: y1, w: w, h: h, score: score));
+        // YuNet landmarks (work-frame px): cols 4-5 right eye, 6-7 left eye.
+        // Used only for optional gender-crop alignment; null when unavailable.
+        found.add(
+          _FaceBoxScratch(
+            x1: x1,
+            y1: y1,
+            w: w,
+            h: h,
+            score: score,
+            rightEyeX: _matValue(detections, i, 4),
+            rightEyeY: _matValue(detections, i, 5),
+            leftEyeX: _matValue(detections, i, 6),
+            leftEyeY: _matValue(detections, i, 7),
+          ),
+        );
       }
     } finally {
       detections.dispose();
@@ -197,27 +239,108 @@ class OpenCvVisionDatasource {
     return found;
   }
 
-  (String, String) _classifyAgeGender(
-    cv.Net ageNet,
-    cv.Net genderNet,
-    cv.Mat faceRoi,
-  ) {
+  String _classifyAge(cv.Net ageNet, cv.Mat faceRoi) {
     final blob = _ageGenderBlob(faceRoi);
-    genderNet.setInput(blob);
-    final genderPreds = genderNet.forward();
-    final genderIdx = _argmax(genderPreds, kGenderLabels.length);
-    genderPreds.dispose();
-
     ageNet.setInput(blob);
     final agePreds = ageNet.forward();
     blob.dispose();
     final ageIdx = _argmax(agePreds, kAgeLabels.length);
     agePreds.dispose();
+    return kAgeCustomRanges[ageIdx.clamp(0, kAgeCustomRanges.length - 1)];
+  }
 
-    return (
-      kGenderLabels[genderIdx.clamp(0, kGenderLabels.length - 1)],
-      kAgeCustomRanges[ageIdx.clamp(0, kAgeCustomRanges.length - 1)],
+  /// Builds the enhanced gender crop and runs inference for one face box.
+  ///
+  /// Returns `(label, maleProbability, confidence)`. When the face is below
+  /// [GenderPipelineConfig.minGenderFacePx], inference is skipped and the
+  /// result is `('', 0, 0)` so the tracker treats this frame as "no gender".
+  (String, double, double) _classifyGenderForBox({
+    required cv.Net genderNet,
+    required cv.Mat frame,
+    required int x1,
+    required int y1,
+    required int w,
+    required int h,
+    required _FaceBoxScratch box,
+    required double invScale,
+  }) {
+    final cfg = detectionConfig.gender;
+    if (w < cfg.minGenderFacePx || h < cfg.minGenderFacePx) {
+      return ('', 0.0, 0.0);
+    }
+
+    final (gx, gy, gside) = squareFaceCropRect(
+      x1,
+      y1,
+      w,
+      h,
+      frame.cols,
+      frame.rows,
+      padFraction: cfg.faceMarginFraction,
     );
+    final region = frame.region(cv.Rect(gx, gy, gside, gside));
+
+    cv.Mat? aligned;
+    cv.Mat? preprocessed;
+    try {
+      var src = region;
+      if (cfg.alignmentEnabled &&
+          box.rightEyeX != null &&
+          box.rightEyeY != null &&
+          box.leftEyeX != null &&
+          box.leftEyeY != null) {
+        // Landmarks are work-frame px; map to original frame, then to crop.
+        aligned = _aligner.align(
+          region,
+          leftEyeX: box.leftEyeX! * invScale - gx,
+          leftEyeY: box.leftEyeY! * invScale - gy,
+          rightEyeX: box.rightEyeX! * invScale - gx,
+          rightEyeY: box.rightEyeY! * invScale - gy,
+        );
+        if (aligned != null) src = aligned;
+      }
+
+      preprocessed = _preprocessor.process(src, cfg);
+      return _classifyGender(genderNet, preprocessed);
+    } finally {
+      preprocessed?.dispose();
+      aligned?.dispose();
+      region.dispose();
+    }
+  }
+
+  (String, double, double) _classifyGender(cv.Net genderNet, cv.Mat faceRoi) {
+    final blob = _ageGenderBlob(faceRoi);
+    genderNet.setInput(blob);
+    final preds = genderNet.forward();
+    blob.dispose();
+    final maleProb = _genderMaleProb(preds);
+    preds.dispose();
+
+    final isMale = maleProb >= 0.5;
+    final label = isMale ? kGenderLabels[0] : kGenderLabels[1];
+    final confidence = isMale ? maleProb : 1.0 - maleProb;
+    return (label, maleProb, confidence);
+  }
+
+  /// P(male) from the 2-class gender output.
+  ///
+  /// GoogLeNet gender ONNX ends in a softmax, so when the two outputs already
+  /// look like a normalized distribution they are used directly; otherwise
+  /// they are treated as logits and softmaxed defensively.
+  double _genderMaleProb(cv.Mat preds) {
+    final v0 = _flatMatValue(preds, 0) ?? 0.0;
+    final v1 = _flatMatValue(preds, 1) ?? 0.0;
+    final sum = v0 + v1;
+    if (v0 >= 0 && v1 >= 0 && sum > 0.99 && sum < 1.01) {
+      return (v0 / sum).clamp(0.0, 1.0);
+    }
+    final maxV = v0 > v1 ? v0 : v1;
+    final e0 = math.exp(v0 - maxV);
+    final e1 = math.exp(v1 - maxV);
+    final denom = e0 + e1;
+    if (denom <= 0) return 0.5;
+    return (e0 / denom).clamp(0.0, 1.0);
   }
 
   cv.Mat _ageGenderBlob(cv.Mat faceRoi) {
@@ -284,6 +407,10 @@ class _FaceBoxScratch {
     required this.w,
     required this.h,
     required this.score,
+    this.rightEyeX,
+    this.rightEyeY,
+    this.leftEyeX,
+    this.leftEyeY,
   });
 
   final int x1;
@@ -291,4 +418,10 @@ class _FaceBoxScratch {
   final int w;
   final int h;
   final double score;
+
+  /// YuNet eye landmarks in detection *work-frame* pixels (null if missing).
+  final double? rightEyeX;
+  final double? rightEyeY;
+  final double? leftEyeX;
+  final double? leftEyeY;
 }

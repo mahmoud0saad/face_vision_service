@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import '../entities/detected_face.dart';
 import '../vision_constants.dart';
 
@@ -5,17 +7,27 @@ import '../vision_constants.dart';
 ///
 /// Uses IoU (Intersection over Union) on bounding boxes for matching.
 /// Tracks are removed after [maxMissedFrames] consecutive misses.
-/// Gender and age labels lock after [labelConfirmFrames] consecutive agrees.
+///
+/// Age labels lock after [labelConfirmFrames] consecutive agrees. Gender is
+/// instead stabilized by averaging the model's per-frame male-probability over
+/// a short [smoothingWindow] history per track; the displayed label is always a
+/// concrete `M`/`F` (the smoothed confidence is surfaced on the face as
+/// metadata). A track's gender history is discarded with the track when it
+/// disappears.
 class FaceTracker {
   FaceTracker({
     this.iouThreshold = 0.3,
     this.maxMissedFrames = 15,
     this.labelConfirmFrames = kLabelConfirmFrames,
+    this.smoothingWindow = kGenderSmoothingWindow,
   });
 
   final double iouThreshold;
   final int maxMissedFrames;
   final int labelConfirmFrames;
+
+  /// Number of recent per-frame male-probabilities averaged per track.
+  final int smoothingWindow;
 
   int _nextId = 1;
   final List<_Track> _tracks = [];
@@ -63,7 +75,8 @@ class FaceTracker {
     for (var fi = 0; fi < rawFaces.length; fi++) {
       if (matched[fi]) continue;
       final id = _nextId++;
-      final track = _Track(id: id, face: rawFaces[fi]);
+      final track =
+          _Track(id: id, face: rawFaces[fi], smoothingWindow: smoothingWindow);
       track.updateLabels(rawFaces[fi], labelConfirmFrames);
       _tracks.add(track);
       result[fi] = track.toDetectedFace();
@@ -105,31 +118,37 @@ class FaceTracker {
 }
 
 class _Track {
-  _Track({required this.id, required this.face});
+  _Track({
+    required this.id,
+    required this.face,
+    required this.smoothingWindow,
+  });
 
   final int id;
   DetectedFace face;
   int missed = 0;
+  final int smoothingWindow;
 
-  String? confirmedGender;
+  /// Ring buffer of recent per-frame male-probabilities for this track. Only
+  /// frames where gender inference actually ran are pushed.
+  final List<double> _maleProbs = [];
+
   String? confirmedAge;
-  String? pendingGender;
-  int genderStreak = 0;
   String? pendingAge;
   int ageStreak = 0;
 
   void updateLabels(DetectedFace raw, int confirmFrames) {
-    final gender = _advanceLabel(
-      raw.genderLabel,
-      confirmedGender,
-      pendingGender,
-      genderStreak,
-      confirmFrames,
-    );
-    confirmedGender = gender.$1;
-    pendingGender = gender.$2;
-    genderStreak = gender.$3;
+    // Gender: accumulate the per-frame probability for temporal smoothing.
+    // genderConfidence == 0 means inference was skipped this frame (e.g. the
+    // face was below the minimum size), so it is not counted.
+    if (raw.genderConfidence > 0) {
+      _maleProbs.add(raw.maleProbability);
+      while (_maleProbs.length > smoothingWindow) {
+        _maleProbs.removeAt(0);
+      }
+    }
 
+    // Age keeps the existing consecutive-agreement confirmation.
     final age = _advanceLabel(
       raw.ageLabel,
       confirmedAge,
@@ -140,6 +159,25 @@ class _Track {
     confirmedAge = age.$1;
     pendingAge = age.$2;
     ageStreak = age.$3;
+  }
+
+  /// Smoothed gender as `(label, avgMaleProb, confidence)`.
+  ///
+  /// Averages the male-probability history and always reports a concrete `M`/
+  /// `F` from the side of the 0.5 decision boundary the average falls on.
+  /// `confidence` (distance from 0.5) is still surfaced as metadata so callers
+  /// can apply their own filtering. Empty history yields `('', 0, 0)` (gender
+  /// inference was skipped, e.g. face below the minimum size).
+  (String, double, double) smoothedGender() {
+    if (_maleProbs.isEmpty) return ('', 0.0, 0.0);
+    var sum = 0.0;
+    for (final p in _maleProbs) {
+      sum += p;
+    }
+    final avg = sum / _maleProbs.length;
+    final confidence = math.max(avg, 1.0 - avg);
+    final label = avg >= 0.5 ? kGenderLabels[0] : kGenderLabels[1];
+    return (label, avg, confidence);
   }
 
   (String?, String?, int) _advanceLabel(
@@ -158,18 +196,23 @@ class _Track {
     return (null, raw, 1);
   }
 
-  DetectedFace toDetectedFace() => DetectedFace(
-        id: id,
-        x: face.x,
-        y: face.y,
-        width: face.width,
-        height: face.height,
-        genderLabel: confirmedGender ?? '',
-        ageLabel: confirmedAge ?? '',
-        detectionScore: face.detectionScore,
-        leftEyeState: face.leftEyeState,
-        rightEyeState: face.rightEyeState,
-      );
+  DetectedFace toDetectedFace() {
+    final gender = smoothedGender();
+    return DetectedFace(
+      id: id,
+      x: face.x,
+      y: face.y,
+      width: face.width,
+      height: face.height,
+      genderLabel: gender.$1,
+      ageLabel: confirmedAge ?? '',
+      detectionScore: face.detectionScore,
+      leftEyeState: face.leftEyeState,
+      rightEyeState: face.rightEyeState,
+      maleProbability: gender.$2,
+      genderConfidence: gender.$3,
+    );
+  }
 }
 
 class _IouPair {

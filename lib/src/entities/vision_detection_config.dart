@@ -1,4 +1,5 @@
 import '../vision_constants.dart';
+import 'gender_pipeline_config.dart';
 
 /// Tunable face-detection parameters passed to the vision worker at [init].
 class VisionDetectionConfig {
@@ -10,6 +11,7 @@ class VisionDetectionConfig {
     this.minFaceBoxPx = kMinFaceBoxPx,
     this.minClassifyFacePx = kMinClassifyFacePx,
     this.minClassifyFaceArea = kMinClassifyFaceArea,
+    this.gender = const GenderPipelineConfig(),
   });
 
   /// Downscale frames so the longest side is at most this many pixels before
@@ -36,6 +38,10 @@ class VisionDetectionConfig {
   /// age/gender classification. Smaller faces are dropped.
   final int minClassifyFaceArea;
 
+  /// Gender accuracy pipeline parameters (crop margin, preprocessing,
+  /// alignment, confidence threshold, min size and temporal smoothing).
+  final GenderPipelineConfig gender;
+
   Map<String, Object?> toMap() => {
         'processMaxWidth': processMaxWidth,
         'confidenceThreshold': confidenceThreshold,
@@ -44,9 +50,11 @@ class VisionDetectionConfig {
         'minFaceBoxPx': minFaceBoxPx,
         'minClassifyFacePx': minClassifyFacePx,
         'minClassifyFaceArea': minClassifyFaceArea,
+        'gender': gender.toMap(),
       };
 
   factory VisionDetectionConfig.fromMap(Map<Object?, Object?> map) {
+    final genderRaw = map['gender'] as Map<Object?, Object?>?;
     return VisionDetectionConfig(
       processMaxWidth: map['processMaxWidth'] as int? ?? kProcessMaxWidth,
       confidenceThreshold: (map['confidenceThreshold'] as num?)?.toDouble() ??
@@ -59,6 +67,9 @@ class VisionDetectionConfig {
           map['minClassifyFacePx'] as int? ?? kMinClassifyFacePx,
       minClassifyFaceArea:
           map['minClassifyFaceArea'] as int? ?? kMinClassifyFaceArea,
+      gender: genderRaw != null
+          ? GenderPipelineConfig.fromMap(genderRaw)
+          : const GenderPipelineConfig(),
     );
   }
 }
